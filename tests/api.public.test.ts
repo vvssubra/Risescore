@@ -273,3 +273,19 @@ describe('retention', () => {
     expect((await c.post('/api/report-requests', { assessmentId: b.id, sessionToken: b.sessionToken })).status).toBe(400);
   });
 });
+
+describe('staging password gate', () => {
+  it('protects everything except the health check when STAGING_BASIC_AUTH is set', async () => {
+    const st = await startApp({ STAGING_BASIC_AUTH: 'tester:a-long-staging-pass' });
+    try {
+      expect((await fetch(st.url + '/api/health')).status).toBe(200);
+      expect((await fetch(st.url + '/api/config')).status).toBe(401);
+      expect((await fetch(st.url + '/api/assessments', { method: 'POST' })).status).toBe(401);
+      const bad = await fetch(st.url + '/api/config', { headers: { authorization: 'Basic ' + Buffer.from('tester:wrong-password-xx').toString('base64') } });
+      expect(bad.status).toBe(401);
+      expect(bad.headers.get('www-authenticate')).toContain('Basic');
+      const ok = await fetch(st.url + '/api/config', { headers: { authorization: 'Basic ' + Buffer.from('tester:a-long-staging-pass').toString('base64') } });
+      expect(ok.status).toBe(200);
+    } finally { await st.stop(); }
+  });
+});

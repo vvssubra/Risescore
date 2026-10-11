@@ -30,6 +30,7 @@ const Env = z.object({
   MAIL_FROM: z.string().default('R.I.S.E. Scorecard <no-reply@localhost>'),
   MAIL_WEBHOOK_URL: z.string().url().optional(),
   MAIL_WEBHOOK_TOKEN: z.string().optional(),
+  STAGING_BASIC_AUTH: z.string().regex(/^[^:\s]+:.{12,}$/, 'Use user:password with a 12+ character password').optional(),
   WHATSAPP_NUMBER: z.string().regex(/^\d{8,15}$/).default('60122202217'),
 });
 
@@ -60,6 +61,8 @@ export interface Config {
   mailWebhookUrl?: string;
   mailWebhookToken?: string;
   whatsappNumber: string;
+  /** user:password. When set, the whole site (except /api/health) sits behind HTTP Basic auth — for staging. */
+  stagingBasicAuth?: string;
 }
 
 /** Secrets are mandatory in production. In dev/test they are generated once and kept under DATA_DIR. */
@@ -117,5 +120,6 @@ export function loadConfig(overrides: Record<string, string | undefined> = {}, s
     mailWebhookUrl: e.MAIL_WEBHOOK_URL,
     mailWebhookToken: e.MAIL_WEBHOOK_TOKEN,
     whatsappNumber: e.WHATSAPP_NUMBER,
+    stagingBasicAuth: e.STAGING_BASIC_AUTH,
   };
 }

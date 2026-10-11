@@ -3,6 +3,7 @@ import helmet from 'helmet';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { ZodError } from 'zod';
+import { safeEqual } from './crypto.ts';
 import type { Context } from './context.ts';
 import { adminRoutes } from './routes/admin.ts';
 import { publicRoutes } from './routes/public.ts';
@@ -12,6 +13,17 @@ export function createApp(ctx: Context, opts: { clientDir?: string } = {}) {
   const app = express();
   app.disable('x-powered-by');
   app.set('trust proxy', ctx.cfg.trustProxy);
+
+  // Staging gate: keeps an internet-facing test deployment private while the privacy notice is still a draft.
+  if (ctx.cfg.stagingBasicAuth) {
+    const expected = `Basic ${Buffer.from(ctx.cfg.stagingBasicAuth).toString('base64')}`;
+    app.use((req: Request, res: Response, next: NextFunction) => {
+      if (req.path === '/api/health') return next();
+      if (safeEqual(req.get('authorization') ?? '', expected)) return next();
+      res.setHeader('WWW-Authenticate', 'Basic realm="R.I.S.E. staging", charset="UTF-8"');
+      res.status(401).type('text/plain').send('Authentication required.');
+    });
+  }
 
   app.use(
     helmet({
