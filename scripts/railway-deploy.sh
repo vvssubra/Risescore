@@ -9,7 +9,15 @@ command -v railway >/dev/null || { echo "Install the CLI: npm i -g @railway/cli"
 
 echo "Checking project access…"; railway status >/dev/null
 
-# Persistent volume: SQLite + toolkit PDFs live here. Without it every deploy would wipe all data.
+# Postgres holds all application data. Created once; the app service references it (private network URL).
+# Service name is the Railway default ("Postgres"); change PG_SERVICE if you rename it.
+PG_SERVICE="${PG_SERVICE:-Postgres}"
+if ! railway variables --kv 2>/dev/null | grep -q '^DATABASE_URL='; then
+  railway status --json 2>/dev/null | grep -q "\"name\": *\"$PG_SERVICE\"" || railway add --database postgres
+  railway variables --set "DATABASE_URL=\${{${PG_SERVICE}.DATABASE_URL}}" >/dev/null
+fi
+
+# Persistent volume: toolkit PDFs live here. Without it every deploy would wipe the uploaded PDFs.
 if ! railway volume list 2>/dev/null | grep -q '/data'; then
   railway volume add --mount-path /data
 fi

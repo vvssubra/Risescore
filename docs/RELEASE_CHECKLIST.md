@@ -3,7 +3,7 @@
 Blocking:
 - [ ] Counsel approves the EN/BM privacy notice; fill the `[bracketed]` provider + privacy-contact placeholders; set `PRIVACY_NOTICE_STATUS='approved'`; bump `PRIVACY_NOTICE_VERSION`.
 - [ ] Each of the 14 built-in worksheets reviewed for Malaysian wording (no product recommendations/returns/accreditation claims) → mark "compliance-reviewed" in the console.
-- [ ] Production secrets set; HTTPS only; `NODE_ENV=production`; persistent volume for `DATA_DIR`; backups + restore drill.
+- [ ] Production secrets set; HTTPS only; `NODE_ENV=production`; `DATABASE_URL` points at a managed Postgres with backups enabled; persistent volume for `DATA_DIR` (PDFs); restore drill for both.
 - [ ] Email provider wired (`MAIL_WEBHOOK_URL`) and a test report email received (EN and BM).
 - [ ] Two reviewer-capable staff accounts (four-eyes publishing); staff MFA at the identity layer or reverse proxy.
 - [ ] Verify Balla DK credential/disclosure wording before publishing any (do not claim CFP accreditation unless true).

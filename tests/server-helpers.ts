@@ -1,4 +1,5 @@
-import { mkdtempSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
@@ -15,23 +16,28 @@ export interface TestApp {
   url: string;
   dir: string;
   stop(): Promise<void>;
-  /** Raw bytes of the SQLite database (+WAL), to prove nothing sensitive is stored in plaintext. */
-  rawDb(): string;
+  /** Every row of every table as text, to prove nothing sensitive is stored in plaintext. */
+  rawDb(): Promise<string>;
 }
+
+/** Tests need a real Postgres: set TEST_DATABASE_URL (default: local `postgres` superuser, database `rise_test`). Each app gets its own schema. */
+export const TEST_DATABASE_URL = process.env.TEST_DATABASE_URL ?? 'postgres://postgres@localhost:5432/rise_test';
 
 export async function startApp(env: Record<string, string> = {}): Promise<TestApp> {
   const dir = mkdtempSync(join(tmpdir(), 'rise-test-'));
-  const cfg = loadConfig({ NODE_ENV: 'test', DATA_DIR: dir, PUBLIC_BASE_URL: 'http://localhost:3999', RATE_LIMIT_DISABLED: 'true', ...env }, {});
-  const ctx = createContext(cfg);
+  const schema = `t_${randomBytes(6).toString('hex')}`;
+  const cfg = loadConfig({ NODE_ENV: 'test', DATA_DIR: dir, DATABASE_URL: TEST_DATABASE_URL, DB_SCHEMA: schema, PUBLIC_BASE_URL: 'http://localhost:3999', RATE_LIMIT_DISABLED: 'true', ...env }, {});
+  const ctx = await createContext(cfg);
   const app = createApp(ctx, { clientDir: join(dir, 'none') });
   const server: Server = await new Promise((res) => { const s = app.listen(0, '127.0.0.1', () => res(s)); });
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   return {
     ctx, url, dir,
-    async stop() { await new Promise((r) => server.close(() => r(null))); ctx.close(); rmSync(dir, { recursive: true, force: true }); },
-    rawDb() {
-      ctx.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
-      return [cfg.dbPath, cfg.dbPath + '-wal'].filter(existsSync).map((p) => readFileSync(p, 'latin1')).join('\n');
+    async stop() { await new Promise((r) => server.close(() => r(null))); await ctx.db.dropSchema(); await ctx.close(); rmSync(dir, { recursive: true, force: true }); },
+    async rawDb() {
+      const tables = await ctx.db.all<{ tablename: string }>('SELECT tablename FROM pg_tables WHERE schemaname = current_schema()');
+      const dumps = await Promise.all(tables.map(async ({ tablename }) => (await ctx.db.all<{ j: string }>(`SELECT row_to_json(t)::text AS j FROM "${tablename}" t`)).map((r) => r.j).join('\n')));
+      return dumps.join('\n');
     },
   };
 }

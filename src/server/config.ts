@@ -12,7 +12,8 @@ const Env = z.object({
   ALLOWED_ORIGINS: z.string().default(''),
   TRUST_PROXY: z.string().default('false'),
   DATA_DIR: z.string().default('./data'),
-  DB_PATH: z.string().optional(),
+  DATABASE_URL: z.string().regex(/^postgres(ql)?:\/\//, 'DATABASE_URL must be a postgres:// connection string.'),
+  DB_SCHEMA: z.string().optional(),
   STORAGE_DIR: z.string().optional(),
   DATA_ENCRYPTION_KEY: z.string().optional(),
   SIGNING_SECRET: z.string().optional(),
@@ -42,7 +43,9 @@ export interface Config {
   allowedOrigins: string[];
   trustProxy: boolean | number | string;
   dataDir: string;
-  dbPath: string;
+  databaseUrl: string;
+  /** Optional Postgres schema to isolate this app's tables in (default: the connection's default schema). */
+  dbSchema?: string;
   storageDir: string;
   encryptionKey: Buffer;
   signingSecret: string;
@@ -101,7 +104,8 @@ export function loadConfig(overrides: Record<string, string | undefined> = {}, s
     allowedOrigins: [base.origin, ...e.ALLOWED_ORIGINS.split(',').map((s) => s.trim()).filter(Boolean)],
     trustProxy,
     dataDir,
-    dbPath: e.DB_PATH ? resolve(e.DB_PATH) : join(dataDir, 'rise.sqlite'),
+    databaseUrl: e.DATABASE_URL,
+    dbSchema: e.DB_SCHEMA || undefined,
     storageDir: e.STORAGE_DIR ? resolve(e.STORAGE_DIR) : join(dataDir, 'files'),
     encryptionKey: keyBuf,
     signingSecret: signing as string,

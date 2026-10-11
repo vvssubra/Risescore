@@ -3,6 +3,8 @@ import { existsSync } from 'node:fs';
 
 const chromium = process.env.CHROMIUM_PATH ?? ['/opt/pw-browsers/chromium-1194/chrome-linux/chrome', '/opt/pw-browsers/chromium/chrome-linux/chrome'].find(existsSync);
 const PORT = 3100;
+// Fresh Postgres schema per run so e2e never sees data from an earlier one (shared with global-setup via the environment).
+process.env.E2E_SCHEMA ??= `e2e_${Date.now()}`;
 const launchOptions = { ...(chromium ? { executablePath: chromium } : {}), args: ['--no-sandbox'] };
 
 export default defineConfig({
@@ -26,6 +28,7 @@ export default defineConfig({
     timeout: 60_000,
     env: {
       NODE_ENV: 'development', PORT: String(PORT), PUBLIC_BASE_URL: `http://localhost:${PORT}`, DATA_DIR: './test-results/e2e-data',
+      DATABASE_URL: process.env.DATABASE_URL ?? process.env.TEST_DATABASE_URL ?? 'postgres://postgres@localhost:5432/rise_test', DB_SCHEMA: process.env.E2E_SCHEMA,
       RATE_LIMIT_DISABLED: 'true', NODE_NO_WARNINGS: '1',
     },
   },

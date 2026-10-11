@@ -41,7 +41,7 @@ and the server refuses to start without them). Public app at `/`, staff console 
 
 ```
 src/shared    pure TypeScript used by browser and server: questions, engine, plans/alert text, toolkit templates + matching rules, legal text
-src/server    Express API, node:sqlite, crypto, auth, services (assessments, reports, toolkits), mail outbox, retention
+src/server    Express API, PostgreSQL (`pg`), crypto, auth, services (assessments, reports, toolkits), mail outbox, retention
 src/client    Vite app (public flow) + admin console, self-hosted fonts, strict-CSP-safe rendering
 tests         vitest (unit/API) · e2e (Playwright) · reference (golden v2.0 engine + v3 matcher, verbatim)
 reference     QUESTION_BANK.csv audit copy (a test asserts the typed config matches it exactly)
@@ -65,5 +65,5 @@ docs          decision, handoff, migration plan, security notes, release checkli
 ## Not done / needs a decision (see docs/RELEASE_CHECKLIST.md)
 
 Nothing has been deployed, no real lead data migrated, payments not enabled. Open items: legal review of the privacy notice and toolkit wording,
-BM question translations, an email provider (`MAIL_WEBHOOK_URL`), hosting choice (SQLite + local disk suits one instance; use Postgres/S3 adapters to scale out),
+BM question translations, an email provider (`MAIL_WEBHOOK_URL`), hosting choice (Postgres for data; PDFs still use local disk, so use an S3 adapter in `storage.ts` before running more than one instance),
 human usability testing before calling the score "validated".

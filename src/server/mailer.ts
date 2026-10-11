@@ -14,9 +14,9 @@ export interface MailMessage { to: string; subject: string; text: string }
 export class Mailer {
   constructor(private db: Db, private cfg: Config) {}
 
-  enqueue(msg: MailMessage): string {
+  async enqueue(msg: MailMessage): Promise<string> {
     const id = randomUUID();
-    this.db.run(
+    await this.db.run(
       'INSERT INTO outbox (id, to_enc, subject, body_enc, created_at) VALUES (?,?,?,?,?)',
       id, encryptField(this.cfg.encryptionKey, msg.to, 'outbox.to'), msg.subject,
       encryptField(this.cfg.encryptionKey, msg.text, 'outbox.body'), new Date().toISOString(),
@@ -25,7 +25,7 @@ export class Mailer {
   }
 
   async flush(): Promise<{ sent: number; failed: number; skipped: number }> {
-    const rows = this.db.all("SELECT * FROM outbox WHERE status IN ('queued','failed') AND attempts < 5 ORDER BY created_at LIMIT 50");
+    const rows = await this.db.all("SELECT * FROM outbox WHERE status IN ('queued','failed') AND attempts < 5 ORDER BY created_at LIMIT 50");
     let sent = 0, failed = 0, skipped = 0;
     for (const r of rows) {
       if (!this.cfg.mailWebhookUrl) { skipped++; continue; }
@@ -42,10 +42,10 @@ export class Mailer {
           signal: AbortSignal.timeout(10_000),
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        this.db.run("UPDATE outbox SET status='sent', sent_at=?, attempts=attempts+1, error=NULL WHERE id=?", new Date().toISOString(), r.id);
+        await this.db.run("UPDATE outbox SET status='sent', sent_at=?, attempts=attempts+1, error=NULL WHERE id=?", new Date().toISOString(), r.id);
         sent++;
       } catch (e) {
-        this.db.run("UPDATE outbox SET status='failed', attempts=attempts+1, error=? WHERE id=?", String((e as Error).message).slice(0, 200), r.id);
+        await this.db.run("UPDATE outbox SET status='failed', attempts=attempts+1, error=? WHERE id=?", String((e as Error).message).slice(0, 200), r.id);
         failed++;
       }
     }

@@ -9,4 +9,4 @@
 * **Abuse**: body size limits, strict zod validation, honeypot, rate limits (per-IP and per-email; in-memory → use an edge/WAF or Redis limiter if running >1 instance), origin + `Sec-Fetch-Site` checks.
 * **Uploads**: PDFs only, size cap, magic bytes, active-content token screen (basic: also scan with AV/CDR in production), private storage, never served statically.
 * **Privacy**: raw IPs are not stored (HMAC only), consent events append-only, erase-by-link works after link expiry, retention purge job, marketing CSV neutralises formula injection.
-* **Known limits**: `node:sqlite` is experimental in Node 22; the PDF screen is heuristic; no CAPTCHA (hook point: `/api/report-requests`); no MFA for staff (recommended before launch).
+* **Known limits**: the PDF screen is heuristic; no CAPTCHA (hook point: `/api/report-requests`); no MFA for staff (recommended before launch).
