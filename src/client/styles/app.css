@@ -1,0 +1,111 @@
+/* App-level additions on top of the prototype's visual system (base.css): accessibility, mobile-first behaviour, states. */
+:root{--navy:#10253d;--gold-deep:#7d5a26;--muted:#566474;--focus:#8a5a00}
+html{-webkit-text-size-adjust:100%}
+body{min-height:100vh;min-height:100dvh}
+.sr-only{position:absolute!important;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+.skip-link-nav{position:absolute;left:12px;top:-60px;z-index:50;background:var(--navy);color:#fff;padding:12px 18px;border-radius:10px;font-weight:700;text-decoration:none}
+.skip-link-nav:focus{top:10px}
+:focus-visible{outline:3px solid var(--focus);outline-offset:3px}
+[tabindex="-1"]:focus{outline:none}
+h1[data-autofocus]:focus-visible{outline:none}
+.app-shell:focus{outline:none}
+
+/* ---- contrast fixes (prototype greys measured 2.2–3.9:1; all text now >= 4.5:1) ---- */
+.question-help,.progress-count,.report-note,.fineprint,.text-muted,.select-footer,.pillar-comment,.toolkit-card p,.gate-form p,.locked-preview p,.stage-heading p,.report-intro p,.report-top p,.snapshot-head p{color:#566474}
+.helper-label{color:#5f6c7b}
+.footer-inner{color:#5f6c7b}
+.question-category,.eyebrow,.track-card .card-link,.text-action,.alert-item strong,.focus-badge,.step-num{color:#7d5a26}
+.eyebrow.light{color:#e4c38e}
+.opt-num{color:#586676}
+.answer-option.chosen .opt-num{color:#fff}
+.field input::placeholder{color:#6b7785}
+.track-card p,.snapshot-head p,.alert-item p,.hero-copy p,.tiny-trust{color:#4d5b6b}
+.back-link,.skip-link,.nav-reset,.nav-trust,.pill{color:#44566a}
+.linklike{color:#2f5272}
+.contact-panel p,.wa-foot{color:#2f5a49}
+.footer-inner .linklike{color:#2f5272}
+.mini-stat .cap{color:#c9d6e4}.mini-desc{color:#b4c4d6}
+
+/* ---- answer options are real radio inputs, visually styled ---- */
+fieldset.answer-options{border:0;margin:0;padding:0;min-width:0}
+.answer-option{position:relative;cursor:pointer;-webkit-tap-highlight-color:transparent;min-height:56px}
+.answer-option .opt-input{position:absolute;opacity:0;inset:0;width:100%;height:100%;margin:0;cursor:pointer}
+.answer-option:has(.opt-input:focus-visible){outline:3px solid var(--focus);outline-offset:2px;border-color:#bb9259}
+.answer-option .opt-text{font-size:15px;line-height:1.45}
+.question-bottom .primary-btn.small{min-height:48px;padding:10px 20px;font-size:14px}
+.back-link,.skip-link{min-height:48px;padding:12px 16px;display:inline-flex;align-items:center}
+.back-link{padding-left:0}
+.auto-toggle{display:flex;gap:10px;align-items:center;margin-top:18px;font-size:13px;color:#4d5b6b;cursor:pointer;min-height:44px}
+.auto-toggle input{width:20px;height:20px;accent-color:var(--navy)}
+[hidden]{display:none!important}
+
+/* ---- states ---- */
+.center-card{display:flex;justify-content:center}
+.state-card{background:#fff;border:1px solid #e4e9ef;border-radius:24px;box-shadow:var(--shadow);padding:clamp(28px,6vw,52px);text-align:center;max-width:560px;width:100%}
+.state-card h1{font:800 clamp(24px,5vw,32px)/1.25 Manrope,sans-serif;letter-spacing:-.03em;color:var(--navy);margin:14px 0 10px}
+.state-card p{color:#566474;margin:0 0 10px}
+.state-actions{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:22px}
+.spinner{width:42px;height:42px;border-radius:50%;border:4px solid #e9edf2;border-top-color:var(--gold-deep);margin:0 auto;animation:spin .9s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.hp{position:absolute!important;left:-9999px;width:1px;height:1px;overflow:hidden}
+.privacy-line{margin:2px 0 12px!important}
+.inline-error:empty{display:none}
+.inline-error{background:#fdf1f0;border:1px solid #f3c9c5;color:#8f2f2a;padding:10px 12px;border-radius:10px}
+.gate-h,.track-card h2,.locked-preview h2,.report-card h2,.contact-panel h2{margin:0}
+.gate-form .gate-h{font:800 24px/1.3 Manrope,sans-serif;color:var(--navy);letter-spacing:-.035em;margin:8px 0}
+.gate-left h2{font:800 31px/1.25 Manrope,sans-serif}
+.unlock-list{list-style:none;padding:0}
+.track-card h2{font:800 20px/1.3 Manrope,sans-serif;letter-spacing:-.027em;color:var(--navy);margin:26px 0 9px}
+.locked-preview h2{font:800 17px Manrope,sans-serif;color:var(--navy);margin:0 0 4px}
+.report-card h2{font:800 19px/1.35 Manrope,sans-serif;color:var(--navy);letter-spacing:-.025em;margin:5px 0 15px}
+.contact-panel h2{font:800 18px/1.3 Manrope,sans-serif;color:#1a3f32;margin:0 0 6px}
+.toolkit-card h3{margin:0 0 3px;font-size:14px;color:#213951}
+.strong-navy{color:var(--navy)}
+.coverage-line{margin-top:14px;font-size:12px;color:#d6e0ec}
+.wa-foot{font-size:11px;margin:12px 0 0!important}
+.report-card.has-alerts{border-color:#ecd5b6}
+.ghost-btn.danger{color:#8f2f2a;border-color:#e9c5c2}
+.lang-btn{border:1px solid #d5dce6;border-radius:99px;padding:8px 14px;min-height:40px;background:#fff;font-weight:700}
+.notice-sec{margin:0 0 14px}.notice-sec h3{margin:0 0 4px;font-size:14px;color:var(--navy)}.notice-sec p{margin:0 0 6px;font-size:13px;color:#45566a;line-height:1.65}
+.draft-flag{display:inline-block;margin:4px 0 0;padding:5px 10px;border-radius:8px;background:#fff3d6;color:#6b4a07;font-size:12px;font-weight:700}
+.whatsapp-btn{color:#06361d}
+a.whatsapp-btn{text-decoration:none}
+
+/* ---- mobile-first refinements ---- */
+@media(max-width:650px){
+  .header-inner{padding:10px 14px;gap:8px}
+  .nav-right{gap:8px}
+  .lang-btn{padding:6px 12px;min-height:40px;font-size:12px}
+  .nav-reset{min-height:40px;padding:0 4px;font-size:12px}
+  .app-shell{padding:16px 14px calc(88px + env(safe-area-inset-bottom))}
+  .assessment-card{min-height:0;padding:22px 18px 18px}
+  .assessment-card h1{font-size:23px;line-height:1.3;margin:10px 0}
+  .question-help{margin-bottom:18px}
+  .answer-options{gap:10px}
+  .answer-option{padding:12px 14px;min-height:58px}
+  /* thumb-reach action bar: Previous / I'm not sure / Continue stay on screen */
+  .question-bottom{position:fixed;left:0;right:0;bottom:0;z-index:15;margin:0;padding:10px 14px calc(10px + env(safe-area-inset-bottom));background:rgba(255,255,255,.97);backdrop-filter:blur(6px);border-top:1px solid #e4e9ef;flex-wrap:nowrap;box-shadow:0 -8px 24px rgba(16,37,61,.06)}
+  .question-side{margin-left:auto;gap:8px}
+  .question-bottom .primary-btn.small{padding:10px 16px}
+  .skip-link{padding:10px 12px}
+  .helper-label{font-size:11px;margin-top:14px;padding:0 4px}
+  .auto-toggle{margin-top:14px}
+  .gate-form,.gate-left{padding:24px 18px}
+  .gate-left .unlock-list{display:none}
+  .field input{font-size:16px;height:52px}
+  .hero-layout{min-height:0}
+  .report-top h1{font-size:28px}
+  .progress-top{margin-bottom:10px}
+  .report-card{padding:20px 16px}
+  .toolkit-card{flex-wrap:wrap}
+  .modal{padding:20px 16px;max-height:100dvh;border-radius:16px}
+  .modal-backdrop{padding:10px}
+}
+@media(max-width:380px){.track-card{padding:18px}.answer-option .opt-text{font-size:14px}.step-mark{font-size:11px}}
+@media(forced-colors:active){.answer-option.chosen{outline:2px solid Highlight}.progress-line span,.mini-bar i,.pillar-track i{background:Highlight}}
+@media print{.skip-link-nav,.lang-btn,.auto-toggle,#announcer{display:none!important}}
+
+/* utilities (replace inline styles; the CSP forbids style attributes) */
+.mt14{margin:14px 0 0}.mt15{margin:15px 0 0}.mt16{margin:16px 0 0}.center{text-align:center}.grow{flex:1}
+.lang-short{display:none}
+@media(max-width:650px){.lang-full{display:none}.lang-short{display:inline;font-weight:800;letter-spacing:.04em}.lang-btn{min-width:48px;justify-content:center}.brand-text small{display:block;font-size:8px;letter-spacing:.18em}}

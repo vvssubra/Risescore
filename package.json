@@ -2,9 +2,11 @@
   "name": "rise-scorecard",
   "version": "0.1.0",
   "private": true,
-  "description": "R.I.S.E.™ Financial and Career & Income scorecard — standalone application by Balla DK",
+  "description": "R.I.S.E.\u2122 Financial and Career & Income scorecard \u2014 standalone application by Balla DK",
   "type": "module",
-  "engines": { "node": ">=22.13" },
+  "engines": {
+    "node": ">=22.13"
+  },
   "scripts": {
     "dev:server": "tsx watch src/server/index.ts",
     "dev:client": "vite",
@@ -14,11 +16,12 @@
     "test": "vitest run",
     "test:scoring": "vitest run tests/scoring.test.ts",
     "test:toolkits": "vitest run tests/toolkits.test.ts",
-    "test:e2e": "playwright test",
+    "test:e2e": "npm run build:client && playwright test",
     "seed": "tsx scripts/seed.ts",
     "create-admin": "tsx scripts/create-admin.ts",
     "purge": "tsx scripts/purge.ts",
-    "launch-check": "tsx scripts/launch-check.ts"
+    "launch-check": "tsx scripts/launch-check.ts",
+    "build:client": "vite build"
   },
   "dependencies": {
     "express": "^5.1.0",
@@ -26,6 +29,9 @@
     "zod": "^3.25.0"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.13.0",
+    "@fontsource/dm-sans": "^5.3.0",
+    "@fontsource/manrope": "^5.3.0",
     "@playwright/test": "^1.55.0",
     "@types/express": "^5.0.3",
     "@types/node": "^22.15.0",
