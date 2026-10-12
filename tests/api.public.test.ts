@@ -51,10 +51,10 @@ describe('assessments (server-side scoring)', () => {
 
   it('stores profile + answers encrypted, never in plaintext', async () => {
     await submitAssessment(c);
-    const raw = app.rawDb();
+    const raw = await app.rawDb();
     expect(raw).not.toContain('"f_r1"');
     expect(raw).not.toContain('overdue');
-    const row = app.ctx.db.get('SELECT payload_enc, session_token_hash FROM assessments LIMIT 1')!;
+    const row = (await app.ctx.db.get('SELECT payload_enc, session_token_hash FROM assessments LIMIT 1'))!;
     expect(row.payload_enc.startsWith('v1.')).toBe(true);
     expect(row.session_token_hash).toHaveLength(64);
   });
@@ -74,10 +74,10 @@ describe('gated report', () => {
 
   it('honeypot submissions look successful but store nothing', async () => {
     const a = (await submitAssessment(c)).data;
-    const before = app.ctx.db.get<{ n: number }>('SELECT COUNT(*) n FROM report_requests')!.n;
+    const before = (await app.ctx.db.get<{ n: number }>('SELECT COUNT(*) n FROM report_requests'))!.n;
     const r = await requestReport(c, a, { website: 'http://spam.example' });
     expect(r.status).toBe(202);
-    expect(app.ctx.db.get<{ n: number }>('SELECT COUNT(*) n FROM report_requests')!.n).toBe(before);
+    expect((await app.ctx.db.get<{ n: number }>('SELECT COUNT(*) n FROM report_requests'))!.n).toBe(before);
   });
 
   it('issues an expiring link; the full report is recalculated server-side and carries alerts, steps, toolkits and WhatsApp', async () => {
@@ -106,14 +106,14 @@ describe('gated report', () => {
     const a = (await submitAssessment(c)).data;
     const email = 'unique.privacy.check@example.org';
     const r = await requestReport(c, a, { email, firstName: 'Zainab', marketingOptIn: false });
-    const raw = app.rawDb();
+    const raw = await app.rawDb();
     expect(raw).not.toContain(email);
     expect(raw).not.toContain('Zainab');
     expect(raw).not.toContain(r.data.reportToken);
-    const req = app.ctx.db.get('SELECT * FROM report_requests WHERE assessment_id=?', a.id)!;
+    const req = (await app.ctx.db.get('SELECT * FROM report_requests WHERE assessment_id=?', a.id))!;
     expect(decryptField(app.ctx.cfg.encryptionKey, req.email_enc, 'report_requests.email')).toBe(email);
     expect(() => decryptField(app.ctx.cfg.encryptionKey, req.email_enc, 'report_requests.name')).toThrow(); // AAD binds ciphertext to its column
-    const events = app.ctx.db.all('SELECT kind, granted, notice_version FROM consent_events WHERE request_id=? ORDER BY id', req.id);
+    const events = await app.ctx.db.all('SELECT kind, granted, notice_version FROM consent_events WHERE request_id=? ORDER BY id', req.id);
     expect(events).toEqual([
       { kind: 'processing', granted: 1, notice_version: expect.any(String) },
       { kind: 'marketing', granted: 0, notice_version: expect.any(String) },
@@ -125,10 +125,10 @@ describe('gated report', () => {
     const a = (await submitAssessment(c)).data;
     const r = await requestReport(c, a, { marketingOptIn: true });
     const t = r.data.reportToken;
-    expect(app.ctx.db.get('SELECT marketing_opt_in m FROM report_requests WHERE assessment_id=?', a.id)!.m).toBe(1);
+    expect((await app.ctx.db.get('SELECT marketing_opt_in m FROM report_requests WHERE assessment_id=?', a.id))!.m).toBe(1);
     expect((await c.post(`/api/reports/${t}/marketing`, { optIn: false })).data.marketingOptIn).toBe(false);
-    expect(app.ctx.db.get('SELECT marketing_opt_in m FROM report_requests WHERE assessment_id=?', a.id)!.m).toBe(0);
-    expect(app.ctx.db.all('SELECT granted FROM consent_events WHERE kind=\'marketing\' AND request_id=(SELECT id FROM report_requests WHERE assessment_id=?) ORDER BY id', a.id).map((x) => x.granted)).toEqual([1, 0]);
+    expect((await app.ctx.db.get('SELECT marketing_opt_in m FROM report_requests WHERE assessment_id=?', a.id))!.m).toBe(0);
+    expect((await app.ctx.db.all('SELECT granted FROM consent_events WHERE kind=\'marketing\' AND request_id=(SELECT id FROM report_requests WHERE assessment_id=?) ORDER BY id', a.id)).map((x) => x.granted)).toEqual([1, 0]);
     expect((await c.post(`/api/reports/${t}/marketing`, { optIn: 'yes' })).status).toBe(400);
   });
 
@@ -138,22 +138,22 @@ describe('gated report', () => {
     expect((await c.get(`/api/reports/${t}`)).status).toBe(200);
     expect((await c.get('/api/reports/' + 'A'.repeat(43))).status).toBe(404);
     expect((await c.get('/api/reports/short')).status).toBe(404);
-    app.ctx.db.run("UPDATE report_access SET expires_at='2000-01-01T00:00:00.000Z'");
+    await app.ctx.db.run("UPDATE report_access SET expires_at='2000-01-01T00:00:00.000Z'");
     expect((await c.get(`/api/reports/${t}`)).status).toBe(410);
-    const outcomes = app.ctx.db.all('SELECT outcome FROM report_access_events').map((x) => x.outcome);
+    const outcomes = (await app.ctx.db.all('SELECT outcome FROM report_access_events')).map((x) => x.outcome);
     expect(outcomes).toContain('ok');
     expect(outcomes).toContain('denied_expired');
-    app.ctx.db.run("UPDATE report_access SET expires_at='2999-01-01T00:00:00.000Z', revoked_at='2026-01-01T00:00:00.000Z'");
+    await app.ctx.db.run("UPDATE report_access SET expires_at='2999-01-01T00:00:00.000Z', revoked_at='2026-01-01T00:00:00.000Z'");
     expect((await c.get(`/api/reports/${t}`)).status).toBe(410);
   });
 
   it('"Delete my data" erases the request, consent log entries and the stored answers — even after the link expired', async () => {
     const a = (await submitAssessment(c)).data;
     const t = (await requestReport(c, a)).data.reportToken;
-    app.ctx.db.run("UPDATE report_access SET expires_at='2000-01-01T00:00:00.000Z'");
+    await app.ctx.db.run("UPDATE report_access SET expires_at='2000-01-01T00:00:00.000Z'");
     expect((await c.del(`/api/reports/${t}`)).status).toBe(204);
-    expect(app.ctx.db.get('SELECT 1 x FROM assessments WHERE id=?', a.id)).toBeUndefined();
-    expect(app.ctx.db.get('SELECT 1 x FROM report_requests WHERE assessment_id=?', a.id)).toBeUndefined();
+    expect(await app.ctx.db.get('SELECT 1 x FROM assessments WHERE id=?', a.id)).toBeUndefined();
+    expect(await app.ctx.db.get('SELECT 1 x FROM report_requests WHERE assessment_id=?', a.id)).toBeUndefined();
     expect((await c.get(`/api/reports/${t}`)).status).toBe(404);
   });
 
@@ -168,11 +168,11 @@ describe('gated report', () => {
   it('queues the report link email in an encrypted outbox', async () => {
     const a = (await submitAssessment(c)).data;
     const r = await requestReport(c, a, { email: 'outbox.check@example.com', locale: 'ms' });
-    const row = app.ctx.db.all('SELECT * FROM outbox ORDER BY created_at DESC')[0];
+    const row = (await app.ctx.db.all('SELECT * FROM outbox ORDER BY created_at DESC'))[0];
     const body = decryptField(app.ctx.cfg.encryptionKey, row.body_enc, 'outbox.body');
     expect(body).toContain(`/report/${r.data.reportToken}`);
     expect(body).toContain('Laporan R.I.S.E.'); // Bahasa Malaysia email
-    expect(app.rawDb()).not.toContain(r.data.reportToken);
+    expect(await app.rawDb()).not.toContain(r.data.reportToken);
   });
 });
 
@@ -247,14 +247,14 @@ describe('email-verified access mode', () => {
       const r = await requestReport(vc, a);
       expect(r.status).toBe(202);
       expect(r.data.reportToken).toBeUndefined();
-      const row = v.ctx.db.all('SELECT * FROM outbox')[0];
+      const row = (await v.ctx.db.all('SELECT * FROM outbox'))[0];
       const body = decryptField(v.ctx.cfg.encryptionKey, row.body_enc, 'outbox.body');
       const verifyToken = body.match(/\/report\/verify\/([\w-]+)/)![1];
       const ver = await vc.post('/api/reports/verify', { token: verifyToken });
       expect(ver.status).toBe(200);
       expect((await vc.get(`/api/reports/${ver.data.reportToken}`)).status).toBe(200);
       expect((await vc.post('/api/reports/verify', { token: verifyToken })).status).toBe(410); // one-time
-      expect(v.ctx.db.get('SELECT email_verified_at e FROM report_requests')!.e).toBeTruthy();
+      expect((await v.ctx.db.get('SELECT email_verified_at e FROM report_requests'))!.e).toBeTruthy();
     } finally { await v.stop(); }
   });
 });
@@ -264,12 +264,12 @@ describe('retention', () => {
     const a = (await submitAssessment(c)).data;
     await requestReport(c, a, { email: 'retention@example.com' });
     const b = (await submitAssessment(c)).data; // never turned into a report
-    app.ctx.db.run("UPDATE assessments SET expires_at='2000-01-01T00:00:00.000Z' WHERE id=?", b.id);
-    app.ctx.db.run("UPDATE report_requests SET expires_at='2000-01-01T00:00:00.000Z' WHERE assessment_id=?", a.id);
-    const out = app.ctx.reports.purgeExpired();
+    await app.ctx.db.run("UPDATE assessments SET expires_at='2000-01-01T00:00:00.000Z' WHERE id=?", b.id);
+    await app.ctx.db.run("UPDATE report_requests SET expires_at='2000-01-01T00:00:00.000Z' WHERE assessment_id=?", a.id);
+    const out = await app.ctx.reports.purgeExpired();
     expect(out.reportRequests).toBeGreaterThanOrEqual(1);
     expect(out.assessments).toBeGreaterThanOrEqual(1);
-    expect(app.ctx.db.get('SELECT 1 x FROM assessments WHERE id=?', b.id)).toBeUndefined();
+    expect(await app.ctx.db.get('SELECT 1 x FROM assessments WHERE id=?', b.id)).toBeUndefined();
     expect((await c.post('/api/report-requests', { assessmentId: b.id, sessionToken: b.sessionToken })).status).toBe(400);
   });
 });

@@ -1,27 +1,104 @@
-import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import pg from 'pg';
+import type { PGlite } from '@electric-sql/pglite';
 
 export type Row = Record<string, any>;
+export interface RunResult { changes: number; rows: Row[] }
+type Param = string | number | boolean | null | undefined | Buffer | Uint8Array;
 
-/** Thin wrapper over node:sqlite (built into Node 22 — no native build step). */
-export class Db {
-  readonly raw: DatabaseSync;
-  constructor(path: string) {
-    if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
-    this.raw = new DatabaseSync(path);
-    this.raw.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA synchronous = NORMAL;');
+/** Minimal async query surface shared by the pool and by an open transaction. SQL uses `?` placeholders. */
+export interface Queryable {
+  run(sql: string, ...params: Param[]): Promise<RunResult>;
+  get<T = Row>(sql: string, ...params: Param[]): Promise<T | undefined>;
+  all<T = Row>(sql: string, ...params: Param[]): Promise<T[]>;
+  /** Multi-statement SQL without parameters (migrations). */
+  exec(sql: string): Promise<void>;
+}
+
+export interface Db extends Queryable {
+  readonly kind: 'postgres' | 'pglite';
+  tx<T>(fn: (t: Queryable) => Promise<T>): Promise<T>;
+  close(): Promise<void>;
+}
+
+/** `?` → `$1, $2…` (no literal question marks appear inside SQL strings in this codebase). */
+export function toPgSql(sql: string): string {
+  let i = 0;
+  return sql.replace(/\?/g, () => `$${++i}`);
+}
+const norm = (p: Param) => (p === undefined ? null : p instanceof Uint8Array && !Buffer.isBuffer(p) ? Buffer.from(p) : p);
+
+function wrap(query: (sql: string, params: unknown[]) => Promise<{ rows: Row[]; changes: number }>, exec: (sql: string) => Promise<void>): Queryable {
+  const run = async (sql: string, ...params: Param[]): Promise<RunResult> => query(toPgSql(sql), params.map(norm));
+  return {
+    run,
+    get: async <T>(sql: string, ...params: Param[]) => (await run(sql, ...params)).rows[0] as T | undefined,
+    all: async <T>(sql: string, ...params: Param[]) => (await run(sql, ...params)).rows as T[],
+    exec,
+  };
+}
+
+export interface DbOptions {
+  /** postgres://… for a real server; omit to use embedded PGlite (development / tests only). */
+  url?: string;
+  ssl?: 'off' | 'require' | 'verify';
+  schema?: string;
+  /** PGlite data directory, or "memory://" for an ephemeral in-process database. */
+  pglitePath?: string;
+  poolMax?: number;
+}
+
+const SCHEMA_RE = /^[a-z_][a-z0-9_]{0,40}$/;
+
+export async function openDb(o: DbOptions): Promise<Db> {
+  if (o.schema && !SCHEMA_RE.test(o.schema)) throw new Error('DATABASE_SCHEMA must be a simple lower-case identifier.');
+  return o.url ? openPg(o) : openPglite(o);
+}
+
+async function openPg(o: DbOptions): Promise<Db> {
+  pg.types.setTypeParser(20, (v) => parseInt(v, 10)); // bigint (COUNT, identity) → JS number
+  const ssl = o.ssl === 'require' ? { rejectUnauthorized: false } : o.ssl === 'verify' ? { rejectUnauthorized: true } : o.ssl === 'off' ? false : undefined;
+  const base = { connectionString: o.url, ssl, max: o.poolMax ?? 10, idleTimeoutMillis: 30_000, connectionTimeoutMillis: 10_000 };
+  if (o.schema) {
+    // CREATE SCHEMA IF NOT EXISTS races when several instances boot together, so serialise it with an advisory lock.
+    const boot = new pg.Pool({ ...base, max: 1 });
+    const c = await boot.connect();
+    try {
+      await c.query('SELECT pg_advisory_lock(727273)');
+      await c.query(`CREATE SCHEMA IF NOT EXISTS "${o.schema}"`);
+    } finally { await c.query('SELECT pg_advisory_unlock(727273)').catch(() => undefined); c.release(); await boot.end(); }
   }
-  run(sql: string, ...params: SQLInputValue[]) { return this.raw.prepare(sql).run(...params); }
-  get<T = Row>(sql: string, ...params: SQLInputValue[]): T | undefined { return this.raw.prepare(sql).get(...params) as T | undefined; }
-  all<T = Row>(sql: string, ...params: SQLInputValue[]): T[] { return this.raw.prepare(sql).all(...params) as T[]; }
-  exec(sql: string) { this.raw.exec(sql); }
-  tx<T>(fn: () => T): T {
-    this.raw.exec('BEGIN IMMEDIATE');
-    try { const out = fn(); this.raw.exec('COMMIT'); return out; }
-    catch (e) { this.raw.exec('ROLLBACK'); throw e; }
-  }
-  close() { this.raw.close(); }
+  const pool = new pg.Pool({ ...base, ...(o.schema ? { options: `-c search_path=${o.schema}` } : {}) });
+  pool.on('error', (e) => console.error('[db] idle client error', e.message));
+  const exec = async (sql: string) => { await pool.query(sql); };
+  const q = wrap(async (sql, params) => { const r = await pool.query(sql, params as any[]); return { rows: r.rows, changes: r.rowCount ?? 0 }; }, exec);
+  return {
+    kind: 'postgres', ...q,
+    async tx<T>(fn: (t: Queryable) => Promise<T>) {
+      const c = await pool.connect();
+      const t = wrap(async (sql, params) => { const r = await c.query(sql, params as any[]); return { rows: r.rows, changes: r.rowCount ?? 0 }; }, async (s) => { await c.query(s); });
+      try { await c.query('BEGIN'); const out = await fn(t); await c.query('COMMIT'); return out; }
+      catch (e) { await c.query('ROLLBACK').catch(() => undefined); throw e; }
+      finally { c.release(); }
+    },
+    async close() { await pool.end(); },
+  };
+}
+
+async function openPglite(o: DbOptions): Promise<Db> {
+  const { PGlite } = await import('@electric-sql/pglite');
+  const path = o.pglitePath ?? 'memory://';
+  if (!path.startsWith('memory://')) mkdirSync(path, { recursive: true });
+  const db: PGlite = new PGlite(path);
+  await db.waitReady;
+  const mk = (target: Pick<PGlite, 'query' | 'exec'>) =>
+    wrap(async (sql, params) => { const r = await target.query<Row>(sql, params as any[]); return { rows: r.rows, changes: r.affectedRows ?? 0 }; }, async (s) => { await target.exec(s); });
+  const q = mk(db);
+  return {
+    kind: 'pglite', ...q,
+    tx: <T>(fn: (t: Queryable) => Promise<T>) => db.transaction((t) => fn(mk(t as unknown as PGlite))),
+    async close() { await db.close(); },
+  };
 }
 
 const MIGRATIONS: { version: number; sql: string }[] = [
@@ -50,7 +127,7 @@ CREATE TABLE sessions (
   ip_hash TEXT
 );
 CREATE TABLE audit_log (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   at TEXT NOT NULL,
   actor TEXT,
   action TEXT NOT NULL,
@@ -91,8 +168,9 @@ CREATE TABLE report_requests (
 );
 CREATE INDEX idx_report_requests_email ON report_requests(email_hash);
 CREATE INDEX idx_report_requests_expires ON report_requests(expires_at);
+CREATE INDEX idx_report_requests_assessment ON report_requests(assessment_id);
 CREATE TABLE consent_events (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   request_id TEXT NOT NULL,
   kind TEXT NOT NULL CHECK (kind IN ('processing','marketing')),
   granted INTEGER NOT NULL,
@@ -111,7 +189,7 @@ CREATE TABLE report_access (
   last_used_at TEXT
 );
 CREATE TABLE report_access_events (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   access_id TEXT NOT NULL REFERENCES report_access(id) ON DELETE CASCADE,
   at TEXT NOT NULL,
   ip_hash TEXT,
@@ -146,7 +224,7 @@ CREATE TABLE toolkits (
   updated_at TEXT NOT NULL
 );
 CREATE TABLE toolkit_versions (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   toolkit_id TEXT NOT NULL REFERENCES toolkits(id) ON DELETE CASCADE,
   version INTEGER NOT NULL,
   storage_key TEXT NOT NULL,
@@ -175,18 +253,28 @@ CREATE TABLE toolkit_rules (
   updated_by TEXT,
   updated_at TEXT NOT NULL
 );
+-- Private object storage for toolkit PDFs (default driver). Keeps the app stateless: no volume or bucket required.
+CREATE TABLE files (
+  key TEXT PRIMARY KEY,
+  data BYTEA NOT NULL,
+  size_bytes INTEGER NOT NULL,
+  created_at TEXT NOT NULL
+);
 `,
   },
 ];
 
-export function migrate(db: Db) {
-  db.exec('CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)');
-  const done = new Set(db.all<{ version: number }>('SELECT version FROM schema_migrations').map((r) => r.version));
-  for (const m of MIGRATIONS) {
-    if (done.has(m.version)) continue;
-    db.tx(() => {
-      db.exec(m.sql);
-      db.run('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)', m.version, new Date().toISOString());
-    });
-  }
+/** Applies pending migrations under a transaction-scoped advisory lock so several instances can boot at once. */
+export async function migrate(db: Db) {
+  await db.tx(async (t) => {
+    // Lock FIRST: even CREATE TABLE IF NOT EXISTS is not safe to run concurrently on Postgres.
+    await t.run('SELECT pg_advisory_xact_lock(727274)');
+    await t.exec('CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)');
+    const done = new Set((await t.all<{ version: number }>('SELECT version FROM schema_migrations')).map((r) => r.version));
+    for (const m of MIGRATIONS) {
+      if (done.has(m.version)) continue;
+      await t.exec(m.sql);
+      await t.run('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)', m.version, new Date().toISOString());
+    }
+  });
 }

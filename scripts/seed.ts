@@ -2,8 +2,8 @@
 import { loadConfig } from '../src/server/config.ts';
 import { createContext } from '../src/server/context.ts';
 
-const ctx = createContext(loadConfig());
-const n = ctx.db.get<{ n: number }>('SELECT COUNT(*) n FROM toolkits')!.n;
-const r = ctx.db.get<{ n: number }>('SELECT COUNT(*) n FROM toolkit_rules')!.n;
-console.log(`Database ready at ${ctx.cfg.dbPath}: ${n} toolkits, ${r} matching rules.`);
-ctx.close();
+const ctx = await createContext(loadConfig());
+const n = (await ctx.db.get<{ n: number }>('SELECT COUNT(*)::int n FROM toolkits'))!.n;
+const r = (await ctx.db.get<{ n: number }>('SELECT COUNT(*)::int n FROM toolkit_rules'))!.n;
+console.log(`Database ready (${ctx.db.kind}): ${n} toolkits, ${r} matching rules.`);
+await ctx.close();

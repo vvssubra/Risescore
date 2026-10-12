@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { Config } from '../config.ts';
 import { decryptField, encryptField, hmacB64u, newToken, safeEqual, sha256Hex } from '../crypto.ts';
-import type { Db, Row } from '../db.ts';
+import type { Db, Queryable, Row } from '../db.ts';
 import type { Mailer } from '../mailer.ts';
 import { assess } from '../../shared/engine.ts';
 import { MARKETING_NOTICE_VERSION, PRIVACY_NOTICE_VERSION, type Locale } from '../../shared/legal.ts';
@@ -59,14 +59,15 @@ export class ReportService {
   }
 
   // ---------- gate ----------
-  request(input: unknown, ipHash: string) {
+  async request(input: unknown, ipHash: string) {
+    void ipHash;
     const d = reportRequestSchema.parse(input);
     if (d.website) {
       // Honeypot tripped: pretend success without storing anything.
       return { status: 'pending_verification' as const, honeypot: true as const };
     }
     if (d.privacyNoticeVersion !== PRIVACY_NOTICE_VERSION) throw new HttpError(409, 'The privacy notice has been updated. Please reload the page and review it.', 'notice_outdated');
-    const a = this.assessments.authorise(d.assessmentId, d.sessionToken);
+    const a = await this.assessments.authorise(d.assessmentId, d.sessionToken);
     const now = Date.now();
     const created = new Date(now).toISOString();
     const expires = new Date(now + this.cfg.reportRetentionDays * DAY).toISOString();
@@ -75,9 +76,9 @@ export class ReportService {
     const token = newToken();
     const tokenExpires = new Date(now + (immediate ? this.cfg.reportTtlDays * DAY : DAY)).toISOString();
 
-    this.db.tx(() => {
-      this.db.run('DELETE FROM report_requests WHERE assessment_id=?', a.id); // one live request per assessment
-      this.db.run(
+    await this.db.tx(async (tx: Queryable) => {
+      await tx.run('DELETE FROM report_requests WHERE assessment_id=?', a.id); // one live request per assessment
+      await tx.run(
         `INSERT INTO report_requests (id,assessment_id,name_enc,email_enc,email_hash,locale,privacy_notice_version,processing_consent_at,marketing_opt_in,marketing_opt_in_at,marketing_notice_version,email_verified_at,status,created_at,expires_at)
          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         requestId, a.id,
@@ -88,17 +89,17 @@ export class ReportService {
         d.marketingOptIn ? 1 : 0, d.marketingOptIn ? created : null, d.marketingOptIn ? MARKETING_NOTICE_VERSION : null,
         null, immediate ? 'ready' : 'pending_verification', created, expires,
       );
-      this.db.run('INSERT INTO consent_events (request_id,kind,granted,notice_version,at) VALUES (?,?,?,?,?)', requestId, 'processing', 1, d.privacyNoticeVersion, created);
-      this.db.run('INSERT INTO consent_events (request_id,kind,granted,notice_version,at) VALUES (?,?,?,?,?)', requestId, 'marketing', d.marketingOptIn ? 1 : 0, MARKETING_NOTICE_VERSION, created);
-      this.db.run(
+      await tx.run('INSERT INTO consent_events (request_id,kind,granted,notice_version,at) VALUES (?,?,?,?,?)', requestId, 'processing', 1, d.privacyNoticeVersion, created);
+      await tx.run('INSERT INTO consent_events (request_id,kind,granted,notice_version,at) VALUES (?,?,?,?,?)', requestId, 'marketing', d.marketingOptIn ? 1 : 0, MARKETING_NOTICE_VERSION, created);
+      await tx.run(
         'INSERT INTO report_access (id,request_id,token_hash,kind,expires_at,created_at) VALUES (?,?,?,?,?,?)',
         randomUUID(), requestId, sha256Hex(token), immediate ? 'report' : 'verify', tokenExpires, created,
       );
-      this.db.run('UPDATE assessments SET expires_at=? WHERE id=?', expires, a.id); // keep the answers as long as the report request
+      await tx.run('UPDATE assessments SET expires_at=? WHERE id=?', expires, a.id); // keep the answers as long as the report request
     });
 
     const link = immediate ? `${this.cfg.publicBaseUrl}/report/${token}` : `${this.cfg.publicBaseUrl}/report/verify/${token}`;
-    this.mailer.enqueue({ to: d.email, subject: emailSubject(d.locale, immediate), text: emailBody(d.locale, d.firstName, link, immediate, this.cfg.reportTtlDays) });
+    await this.mailer.enqueue({ to: d.email, subject: emailSubject(d.locale, immediate), text: emailBody(d.locale, d.firstName, link, immediate, this.cfg.reportTtlDays) });
     void this.mailer.flush().catch(() => undefined);
 
     return immediate
@@ -107,52 +108,54 @@ export class ReportService {
   }
 
   /** email_verified mode: the emailed one-time link proves control of the address, then issues the report token. */
-  verifyEmail(token: string) {
-    const acc = this.db.get('SELECT * FROM report_access WHERE token_hash=? AND kind=\'verify\'', sha256Hex(token));
+  async verifyEmail(token: string) {
+    const acc = await this.db.get("SELECT * FROM report_access WHERE token_hash=? AND kind='verify'", sha256Hex(token));
     if (!acc || acc.revoked_at || acc.expires_at < nowIso()) throw new HttpError(410, 'This confirmation link is invalid or has expired. Please request your report again.', 'link_expired');
     const reportToken = newToken();
     const t = nowIso();
-    this.db.tx(() => {
-      this.db.run('UPDATE report_access SET revoked_at=? WHERE id=?', t, acc.id);
-      this.db.run("UPDATE report_requests SET email_verified_at=?, status='ready' WHERE id=?", t, acc.request_id);
-      this.db.run('INSERT INTO report_access (id,request_id,token_hash,kind,expires_at,created_at) VALUES (?,?,?,?,?,?)',
+    await this.db.tx(async (tx: Queryable) => {
+      // Single-use: only the request that flips revoked_at from NULL wins, even if the link is opened twice at once.
+      const won = await tx.run('UPDATE report_access SET revoked_at=? WHERE id=? AND revoked_at IS NULL', t, acc.id);
+      if (!won.changes) throw new HttpError(410, 'This confirmation link is invalid or has expired. Please request your report again.', 'link_expired');
+      await tx.run("UPDATE report_requests SET email_verified_at=?, status='ready' WHERE id=?", t, acc.request_id);
+      await tx.run('INSERT INTO report_access (id,request_id,token_hash,kind,expires_at,created_at) VALUES (?,?,?,?,?,?)',
         randomUUID(), acc.request_id, sha256Hex(reportToken), 'report', new Date(Date.now() + this.cfg.reportTtlDays * DAY).toISOString(), t);
     });
     return { reportToken, reportPath: `/report/${reportToken}` };
   }
 
   // ---------- report ----------
-  private lookup(token: string, opts: { allowExpired?: boolean } = {}): { acc: Row; req: Row } {
-    const acc = this.db.get("SELECT * FROM report_access WHERE token_hash=? AND kind='report'", sha256Hex(token));
+  private async lookup(token: string, opts: { allowExpired?: boolean } = {}): Promise<{ acc: Row; req: Row }> {
+    const acc = await this.db.get("SELECT * FROM report_access WHERE token_hash=? AND kind='report'", sha256Hex(token));
     if (!acc) throw new HttpError(404, 'Report not found.', 'report_not_found');
-    const req = this.db.get('SELECT * FROM report_requests WHERE id=?', acc.request_id);
+    const req = await this.db.get('SELECT * FROM report_requests WHERE id=?', acc.request_id);
     if (!req) throw new HttpError(404, 'Report not found.', 'report_not_found');
     if (acc.revoked_at || req.status !== 'ready') {
-      this.event(acc.id, null, 'denied_revoked');
+      await this.event(acc.id, null, 'denied_revoked');
       throw new HttpError(410, 'This report link is no longer active.', 'link_revoked');
     }
     if (!opts.allowExpired && acc.expires_at < nowIso()) {
-      this.event(acc.id, null, 'denied_expired');
+      await this.event(acc.id, null, 'denied_expired');
       throw new HttpError(410, 'This report link has expired. You can retake the scorecard to get a new report.', 'link_expired');
     }
     return { acc, req };
   }
 
-  private event(accessId: string, ipHash: string | null, outcome: string) {
-    this.db.run('INSERT INTO report_access_events (access_id,at,ip_hash,outcome) VALUES (?,?,?,?)', accessId, nowIso(), ipHash, outcome);
+  private async event(accessId: string, ipHash: string | null, outcome: string) {
+    await this.db.run('INSERT INTO report_access_events (access_id,at,ip_hash,outcome) VALUES (?,?,?,?)', accessId, nowIso(), ipHash, outcome);
   }
 
-  getReport(token: string, ipHash: string): FullReport {
-    const { acc, req } = this.lookup(token);
-    const row = this.db.get('SELECT * FROM assessments WHERE id=?', req.assessment_id);
+  async getReport(token: string, ipHash: string): Promise<FullReport> {
+    const { acc, req } = await this.lookup(token);
+    const row = await this.db.get('SELECT * FROM assessments WHERE id=?', req.assessment_id);
     if (!row) throw new HttpError(404, 'Report not found.', 'report_not_found');
     const stored = this.assessments.payload(row);
     const result = assess(stored.profile, stored.answers); // recalculated on every read — never trusted from the client
-    const toolkits = this.toolkits.matchFor(result, stored.profile).map((k) => ({
+    const toolkits = (await this.toolkits.matchFor(result, stored.profile)).map((k) => ({
       ...k, pdf: k.pdf ? { url: this.signFileUrl(k.pdf.versionId), filename: k.pdf.filename, sizeBytes: k.pdf.sizeBytes } : null,
     }));
-    this.db.run('UPDATE report_access SET use_count=use_count+1, last_used_at=? WHERE id=?', nowIso(), acc.id);
-    this.event(acc.id, ipHash, 'ok');
+    await this.db.run('UPDATE report_access SET use_count=use_count+1, last_used_at=? WHERE id=?', nowIso(), acc.id);
+    await this.event(acc.id, ipHash, 'ok');
     return {
       generatedAt: nowIso(), expiresAt: acc.expires_at,
       firstName: decryptField(this.cfg.encryptionKey, req.name_enc, 'report_requests.name'),
@@ -162,29 +165,29 @@ export class ReportService {
   }
 
   /** Right to erasure from inside the report. Works even after the link has expired. */
-  eraseByToken(token: string) {
-    const { req } = this.lookup(token, { allowExpired: true });
-    this.db.tx(() => {
-      this.db.run('DELETE FROM consent_events WHERE request_id=?', req.id);
-      this.db.run('DELETE FROM report_requests WHERE id=?', req.id);
-      this.db.run('DELETE FROM assessments WHERE id=?', req.assessment_id);
+  async eraseByToken(token: string) {
+    const { req } = await this.lookup(token, { allowExpired: true });
+    await this.db.tx(async (tx: Queryable) => {
+      await tx.run('DELETE FROM consent_events WHERE request_id=?', req.id);
+      await tx.run('DELETE FROM report_requests WHERE id=?', req.id);
+      await tx.run('DELETE FROM assessments WHERE id=?', req.assessment_id);
     });
-    audit(this.db, null, 'report.erased_by_subject', 'report_request', req.id);
+    await audit(this.db, null, 'report.erased_by_subject', 'report_request', req.id);
   }
 
-  setMarketing(token: string, optIn: boolean) {
-    const { req } = this.lookup(token);
+  async setMarketing(token: string, optIn: boolean) {
+    const { req } = await this.lookup(token);
     const t = nowIso();
-    this.db.tx(() => {
-      this.db.run('UPDATE report_requests SET marketing_opt_in=?, marketing_opt_in_at=?, marketing_notice_version=? WHERE id=?', optIn ? 1 : 0, optIn ? t : null, MARKETING_NOTICE_VERSION, req.id);
-      this.db.run('INSERT INTO consent_events (request_id,kind,granted,notice_version,at) VALUES (?,?,?,?,?)', req.id, 'marketing', optIn ? 1 : 0, MARKETING_NOTICE_VERSION, t);
+    await this.db.tx(async (tx: Queryable) => {
+      await tx.run('UPDATE report_requests SET marketing_opt_in=?, marketing_opt_in_at=?, marketing_notice_version=? WHERE id=?', optIn ? 1 : 0, optIn ? t : null, MARKETING_NOTICE_VERSION, req.id);
+      await tx.run('INSERT INTO consent_events (request_id,kind,granted,notice_version,at) VALUES (?,?,?,?,?)', req.id, 'marketing', optIn ? 1 : 0, MARKETING_NOTICE_VERSION, t);
     });
     return { marketingOptIn: optIn };
   }
 
   // ---------- admin: leads ----------
-  listLeads(limit = 100, offset = 0) {
-    const rows = this.db.all(
+  async listLeads(limit = 100, offset = 0) {
+    const rows = await this.db.all(
       `SELECT r.*, a.track, a.overall, a.priority, a.alert_count FROM report_requests r JOIN assessments a ON a.id=r.assessment_id ORDER BY r.created_at DESC LIMIT ? OFFSET ?`,
       limit, offset,
     );
@@ -197,8 +200,8 @@ export class ReportService {
   }
 
   /** Only people who opted in to marketing, only status=ready (verified in email_verified mode). */
-  marketingCsv(): string {
-    const rows = this.listLeads(100000).filter((l) => l.marketingOptIn && l.status === 'ready');
+  async marketingCsv(): Promise<string> {
+    const rows = (await this.listLeads(100000)).filter((l) => l.marketingOptIn && l.status === 'ready');
     const cell = (v: unknown) => {
       let s = String(v ?? '');
       if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`; // neutralise spreadsheet formula injection
@@ -208,18 +211,18 @@ export class ReportService {
   }
 
   // ---------- retention ----------
-  purgeExpired(now = new Date()) {
+  async purgeExpired(now = new Date()) {
     const t = now.toISOString();
     const cutoff = (days: number) => new Date(now.getTime() - days * DAY).toISOString();
-    const out = { assessments: 0, reportRequests: 0, audit: 0, outbox: 0 };
-    this.db.tx(() => {
-      out.reportRequests = Number(this.db.run('DELETE FROM report_requests WHERE expires_at < ?', t).changes);
-      out.assessments = Number(this.db.run('DELETE FROM assessments WHERE expires_at < ?', t).changes);
-      out.audit = Number(this.db.run('DELETE FROM audit_log WHERE at < ?', cutoff(this.cfg.auditRetentionDays)).changes);
-      out.outbox = Number(this.db.run("DELETE FROM outbox WHERE (status='sent' AND sent_at < ?) OR created_at < ?", cutoff(7), cutoff(30)).changes);
-      this.db.run('DELETE FROM sessions WHERE expires_at < ?', t);
+    return this.db.tx(async (tx: Queryable) => {
+      const out = { assessments: 0, reportRequests: 0, audit: 0, outbox: 0 };
+      out.reportRequests = (await tx.run('DELETE FROM report_requests WHERE expires_at < ?', t)).changes;
+      out.assessments = (await tx.run('DELETE FROM assessments WHERE expires_at < ?', t)).changes;
+      out.audit = (await tx.run('DELETE FROM audit_log WHERE at < ?', cutoff(this.cfg.auditRetentionDays))).changes;
+      out.outbox = (await tx.run("DELETE FROM outbox WHERE (status='sent' AND sent_at < ?) OR created_at < ?", cutoff(7), cutoff(30))).changes;
+      await tx.run('DELETE FROM sessions WHERE expires_at < ?', t);
+      return out;
     });
-    return out;
   }
 }
 

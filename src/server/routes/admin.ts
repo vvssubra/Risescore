@@ -42,9 +42,9 @@ export function adminRoutes(ctx: Context): Router {
   });
 
   // everything below needs a valid session
-  const session: RequestHandler = (req, res, next) => {
+  const session: RequestHandler = async (req, res, next) => {
     const sid = readCookie(req, cname);
-    const s = ctx.auth.session(sid);
+    const s = await ctx.auth.session(sid);
     if (!s) { res.status(401).json({ error: 'unauthenticated', message: 'Please sign in.' }); return; }
     res.locals.session = s;
     res.locals.sid = sid;
@@ -66,7 +66,7 @@ export function adminRoutes(ctx: Context): Router {
   const id = (req: Request) => { const n = Number(req.params.id); if (!Number.isInteger(n) || n < 1) throw new HttpError(404, 'Not found.', 'not_found'); return n; };
 
   r.get('/auth/me', (_req, res) => res.json({ user: res.locals.session!.user, csrfToken: res.locals.session!.csrf }));
-  r.post('/auth/logout', (_req, res) => { ctx.auth.logout(res.locals.sid); setCookie(res, '', 0); res.json({ ok: true }); });
+  r.post('/auth/logout', async (_req, res) => { await ctx.auth.logout(res.locals.sid); setCookie(res, '', 0); res.json({ ok: true }); });
   r.post('/auth/password', async (req, res) => {
     const b = z.object({ current: z.string().max(200), next: z.string().max(200) }).parse(req.body);
     await ctx.auth.changePassword(res.locals.session!.user.id, b.current, b.next);
@@ -74,15 +74,15 @@ export function adminRoutes(ctx: Context): Router {
   });
 
   // ---- toolkit library ----
-  r.get('/toolkits', need(...ALL), (_req, res) => res.json({ toolkits: ctx.toolkits.listAdmin(), launchNote: 'Built-in worksheets need a compliance review before public launch.' }));
-  r.post('/toolkits', need(...ALL), (req, res) => res.status(201).json(ctx.toolkits.create(req.body, actor(res))));
-  r.patch('/toolkits/:tid', need(...ALL), (req, res) => {
+  r.get('/toolkits', need(...ALL), async (_req, res) => res.json({ toolkits: await ctx.toolkits.listAdmin(), launchNote: 'Built-in worksheets need a compliance review before public launch.' }));
+  r.post('/toolkits', need(...ALL), async (req, res) => res.status(201).json(await ctx.toolkits.create(req.body, actor(res))));
+  r.patch('/toolkits/:tid', need(...ALL), async (req, res) => {
     const a = actor(res);
     // Editors may edit details; only reviewers/admins may activate or deactivate (changes what the public sees).
     if (a.role === 'editor' && typeof req.body?.active === 'boolean') throw new HttpError(403, 'Only reviewers and admins can activate or deactivate toolkits.', 'forbidden');
-    res.json(ctx.toolkits.update(String(req.params.tid), req.body, a));
+    res.json(await ctx.toolkits.update(String(req.params.tid), req.body, a));
   });
-  r.post('/toolkits/:tid/compliance-review', need('admin', 'reviewer'), (req, res) => { ctx.toolkits.markComplianceReviewed(String(req.params.tid), actor(res)); res.json({ ok: true }); });
+  r.post('/toolkits/:tid/compliance-review', need('admin', 'reviewer'), async (req, res) => { await ctx.toolkits.markComplianceReviewed(String(req.params.tid), actor(res)); res.json({ ok: true }); });
 
   r.put('/toolkits/:tid/versions', need(...ALL), limit(ctx.limiter, 'upload', 30, 3_600_000, ip), express.raw({ type: 'application/pdf', limit: ctx.cfg.maxPdfBytes + 1024 }), async (req, res) => {
     if (!Buffer.isBuffer(req.body)) throw new HttpError(415, 'Send the PDF as the request body with Content-Type: application/pdf.', 'unsupported');
@@ -90,31 +90,31 @@ export function adminRoutes(ctx: Context): Router {
     try { filename = decodeURIComponent(String(req.get('x-filename') ?? 'toolkit.pdf')); } catch { /* keep default */ }
     res.status(201).json(await ctx.toolkits.addVersion(String(req.params.tid), req.body, filename, actor(res)));
   });
-  r.post('/versions/:id/submit', need(...ALL), (req, res) => res.json(ctx.toolkits.submitForReview(id(req), actor(res))));
-  r.post('/versions/:id/review', need('admin', 'reviewer'), (req, res) => {
+  r.post('/versions/:id/submit', need(...ALL), async (req, res) => res.json(await ctx.toolkits.submitForReview(id(req), actor(res))));
+  r.post('/versions/:id/review', need('admin', 'reviewer'), async (req, res) => {
     const b = z.object({ decision: z.enum(['publish', 'reject']), note: z.string().max(500).optional(), reviewExpiresAt: z.string().max(40).optional() }).parse(req.body);
-    res.json(ctx.toolkits.review(id(req), b.decision, b.note, b.reviewExpiresAt, actor(res)));
+    res.json(await ctx.toolkits.review(id(req), b.decision, b.note, b.reviewExpiresAt, actor(res)));
   });
-  r.post('/versions/:id/archive', need('admin', 'reviewer'), (req, res) => res.json(ctx.toolkits.archiveVersion(id(req), actor(res))));
+  r.post('/versions/:id/archive', need('admin', 'reviewer'), async (req, res) => res.json(await ctx.toolkits.archiveVersion(id(req), actor(res))));
   r.delete('/versions/:id', need(...ALL), async (req, res) => { await ctx.toolkits.deleteVersion(id(req), actor(res)); res.status(204).end(); });
-  r.get('/versions/:id/file', need(...ALL), (req, res) => {
-    const { version, stream } = ctx.toolkits.storageStream(id(req));
-    if (!stream) throw new HttpError(404, 'File missing from storage.', 'missing');
+  r.get('/versions/:id/file', need(...ALL), async (req, res) => {
+    const { version, data } = await ctx.toolkits.readFile(id(req));
+    if (!data) throw new HttpError(404, 'File missing from storage.', 'missing');
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `inline; filename="${version.filename.replace(/"/g, '')}"`);
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Content-Security-Policy', "sandbox; default-src 'none'");
-    stream.pipe(res);
+    res.end(data);
   });
 
   // ---- matching rules ----
-  r.get('/rules', need(...ALL), (_req, res) => res.json({ rules: ctx.toolkits.rules() }));
-  r.post('/rules', need('admin'), (req, res) => res.status(201).json(ctx.toolkits.upsertRule(null, req.body, actor(res))));
-  r.put('/rules/:rid', need('admin'), (req, res) => res.json(ctx.toolkits.upsertRule(String(req.params.rid), req.body, actor(res))));
-  r.delete('/rules/:rid', need('admin'), (req, res) => { ctx.toolkits.deleteRule(String(req.params.rid), actor(res)); res.status(204).end(); });
+  r.get('/rules', need(...ALL), async (_req, res) => res.json({ rules: await ctx.toolkits.rules() }));
+  r.post('/rules', need('admin'), async (req, res) => res.status(201).json(await ctx.toolkits.upsertRule(null, req.body, actor(res))));
+  r.put('/rules/:rid', need('admin'), async (req, res) => res.json(await ctx.toolkits.upsertRule(String(req.params.rid), req.body, actor(res))));
+  r.delete('/rules/:rid', need('admin'), async (req, res) => { await ctx.toolkits.deleteRule(String(req.params.rid), actor(res)); res.status(204).end(); });
 
   // ---- users ----
-  r.get('/users', need('admin'), (_req, res) => res.json({ users: ctx.auth.listUsers() }));
+  r.get('/users', need('admin'), async (_req, res) => res.json({ users: await ctx.auth.listUsers() }));
   r.post('/users', need('admin'), async (req, res) => res.status(201).json(await ctx.auth.createUser(userCreateSchema.parse(req.body), actor(res).email, true)));
   r.patch('/users/:uid', need('admin'), async (req, res) => {
     const b = z.object({ role: z.enum(['admin', 'reviewer', 'editor']).optional(), active: z.boolean().optional(), name: z.string().trim().min(1).max(100).optional(), newPassword: z.string().max(200).optional() }).parse(req.body);
@@ -122,21 +122,21 @@ export function adminRoutes(ctx: Context): Router {
   });
 
   // ---- leads (personal data: admin only, every access audited) ----
-  r.get('/leads', need('admin'), (req, res) => {
+  r.get('/leads', need('admin'), async (req, res) => {
     const limitN = Math.min(Number(req.query.limit) || 100, 500);
     const offset = Math.max(Number(req.query.offset) || 0, 0);
-    audit(ctx.db, actor(res).email, 'leads.view', 'report_requests', undefined, { limit: limitN, offset });
-    res.json({ leads: ctx.reports.listLeads(limitN, offset) });
+    await audit(ctx.db, actor(res).email, 'leads.view', 'report_requests', undefined, { limit: limitN, offset });
+    res.json({ leads: await ctx.reports.listLeads(limitN, offset) });
   });
-  r.get('/leads/export.csv', need('admin'), (_req, res) => {
-    audit(ctx.db, actor(res).email, 'leads.export_marketing');
+  r.get('/leads/export.csv', need('admin'), async (_req, res) => {
+    await audit(ctx.db, actor(res).email, 'leads.export_marketing');
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', 'attachment; filename="marketing-opt-in.csv"');
-    res.send(ctx.reports.marketingCsv());
+    res.send(await ctx.reports.marketingCsv());
   });
 
-  r.get('/audit', need('admin'), (_req, res) => res.json({ entries: ctx.db.all('SELECT * FROM audit_log ORDER BY id DESC LIMIT 200') }));
-  r.get('/launch-readiness', need('admin'), (_req, res) => res.json({ checks: launchReadiness(ctx.cfg, ctx.db) }));
+  r.get('/audit', need('admin'), async (_req, res) => res.json({ entries: await ctx.db.all('SELECT * FROM audit_log ORDER BY id DESC LIMIT 200') }));
+  r.get('/launch-readiness', need('admin'), async (_req, res) => res.json({ checks: await launchReadiness(ctx.cfg, ctx.db) }));
 
   return r;
 }

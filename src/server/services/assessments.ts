@@ -25,7 +25,7 @@ export class AssessmentService {
   constructor(private db: Db, private cfg: Config) {}
 
   /** The server validates every id/option against the versioned config and recalculates the score itself. */
-  create(rawProfile: unknown, rawAnswers: unknown) {
+  async create(rawProfile: unknown, rawAnswers: unknown) {
     const perr = validateProfile(rawProfile);
     if (perr) throw new HttpError(400, perr, 'invalid_profile');
     const profile = rawProfile as Profile;
@@ -44,7 +44,7 @@ export class AssessmentService {
     const now = Date.now();
     const expiresAt = new Date(now + this.cfg.assessmentRetentionDays * DAY).toISOString();
     const payload: StoredPayload = { profile: p, answers, result };
-    this.db.run(
+    await this.db.run(
       `INSERT INTO assessments (id,scorecard_version,track,overall,priority,alert_count,payload_enc,session_token_hash,created_at,expires_at) VALUES (?,?,?,?,?,?,?,?,?,?)`,
       id, result.version, p.track, result.overall, result.priority, result.alerts.length,
       encryptField(this.cfg.encryptionKey, JSON.stringify(payload), 'assessments.payload'), sha256Hex(sessionToken), new Date(now).toISOString(), expiresAt,
@@ -53,8 +53,8 @@ export class AssessmentService {
   }
 
   /** Verifies the unguessable session token that was handed out at creation. Same error for "missing" and "wrong token". */
-  authorise(id: string, token: string) {
-    const row = this.db.get('SELECT * FROM assessments WHERE id=?', id);
+  async authorise(id: string, token: string) {
+    const row = await this.db.get('SELECT * FROM assessments WHERE id=?', id);
     if (!row || row.expires_at < new Date().toISOString() || !safeEqual(row.session_token_hash, sha256Hex(token))) {
       throw new HttpError(404, 'Assessment not found or expired. Please retake the scorecard.', 'assessment_not_found');
     }

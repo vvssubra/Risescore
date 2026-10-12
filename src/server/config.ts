@@ -12,8 +12,17 @@ const Env = z.object({
   ALLOWED_ORIGINS: z.string().default(''),
   TRUST_PROXY: z.string().default('false'),
   DATA_DIR: z.string().default('./data'),
-  DB_PATH: z.string().optional(),
+  /** postgres://… (required in production). Unset in dev/test → embedded PGlite under DATA_DIR/pgdata (or memory://). */
+  DATABASE_URL: z.string().regex(/^postgres(ql)?:\/\//, 'DATABASE_URL must start with postgres://').optional(),
+  DATABASE_SSL: z.enum(['off', 'require', 'verify']).optional(),
+  DATABASE_SCHEMA: z.string().regex(/^[a-z_][a-z0-9_]{0,40}$/).optional(),
+  DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(50).default(10),
+  PGLITE_PATH: z.string().optional(),
+  STORAGE_DRIVER: z.enum(['db', 'fs']).default('db'),
   STORAGE_DIR: z.string().optional(),
+  BOOTSTRAP_ADMIN_EMAIL: z.string().email().optional(),
+  BOOTSTRAP_ADMIN_PASSWORD: z.string().min(12).optional(),
+  BOOTSTRAP_ADMIN_NAME: z.string().default('Administrator'),
   DATA_ENCRYPTION_KEY: z.string().optional(),
   SIGNING_SECRET: z.string().optional(),
   REPORT_TTL_DAYS: z.coerce.number().int().positive().default(30),
@@ -42,8 +51,14 @@ export interface Config {
   allowedOrigins: string[];
   trustProxy: boolean | number | string;
   dataDir: string;
-  dbPath: string;
+  databaseUrl?: string;
+  databaseSsl?: 'off' | 'require' | 'verify';
+  databaseSchema?: string;
+  databasePoolMax: number;
+  pglitePath: string;
+  storageDriver: 'db' | 'fs';
   storageDir: string;
+  bootstrapAdmin?: { email: string; password: string; name: string };
   encryptionKey: Buffer;
   signingSecret: string;
   reportTtlDays: number;
@@ -86,6 +101,7 @@ export function loadConfig(overrides: Record<string, string | undefined> = {}, s
     key ??= saved.key;
     signing ??= saved.signing;
   }
+  if (isProd && !e.DATABASE_URL) throw new Error('DATABASE_URL (a Postgres connection string) is required in production.');
   const keyBuf = Buffer.from(key as string, 'base64');
   if (keyBuf.length !== 32) throw new Error('DATA_ENCRYPTION_KEY must be 32 bytes, base64 encoded (openssl rand -base64 32).');
   if ((signing as string).length < 32) throw new Error('SIGNING_SECRET must be at least 32 characters.');
@@ -101,7 +117,13 @@ export function loadConfig(overrides: Record<string, string | undefined> = {}, s
     allowedOrigins: [base.origin, ...e.ALLOWED_ORIGINS.split(',').map((s) => s.trim()).filter(Boolean)],
     trustProxy,
     dataDir,
-    dbPath: e.DB_PATH ? resolve(e.DB_PATH) : join(dataDir, 'rise.sqlite'),
+    databaseUrl: e.DATABASE_URL,
+    databaseSsl: e.DATABASE_SSL,
+    databaseSchema: e.DATABASE_SCHEMA,
+    databasePoolMax: e.DATABASE_POOL_MAX,
+    pglitePath: e.PGLITE_PATH ?? join(dataDir, 'pgdata'),
+    storageDriver: e.STORAGE_DRIVER,
+    bootstrapAdmin: e.BOOTSTRAP_ADMIN_EMAIL && e.BOOTSTRAP_ADMIN_PASSWORD ? { email: e.BOOTSTRAP_ADMIN_EMAIL, password: e.BOOTSTRAP_ADMIN_PASSWORD, name: e.BOOTSTRAP_ADMIN_NAME } : undefined,
     storageDir: e.STORAGE_DIR ? resolve(e.STORAGE_DIR) : join(dataDir, 'files'),
     encryptionKey: keyBuf,
     signingSecret: signing as string,

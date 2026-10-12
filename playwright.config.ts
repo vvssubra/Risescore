@@ -25,7 +25,8 @@ export default defineConfig({
     reuseExistingServer: false,
     timeout: 60_000,
     env: {
-      NODE_ENV: 'development', PORT: String(PORT), PUBLIC_BASE_URL: `http://localhost:${PORT}`, DATA_DIR: './test-results/e2e-data',
+      NODE_ENV: 'development', PORT: String(PORT), PUBLIC_BASE_URL: `http://localhost:${PORT}`, DATA_DIR: './test-results/e2e-data', PGLITE_PATH: 'memory://', // fresh embedded Postgres every run
+      BOOTSTRAP_ADMIN_EMAIL: 'admin@e2e.test', BOOTSTRAP_ADMIN_PASSWORD: 'Bootstrap-Pass-12345', BOOTSTRAP_ADMIN_NAME: 'E2E admin',
       RATE_LIMIT_DISABLED: 'true', NODE_NO_WARNINGS: '1',
     },
   },

@@ -8,7 +8,7 @@ const [email, name, role = 'admin'] = process.argv.slice(2);
 if (!email || !name) { console.error('Usage: npm run create-admin -- <email> "<name>" [admin|reviewer|editor]'); process.exit(2); }
 const supplied = process.env.ADMIN_PASSWORD;
 const password = supplied ?? `${randomBytes(12).toString('base64url')}Aa1`;
-const ctx = createContext(loadConfig());
+const ctx = await createContext(loadConfig());
 try {
   const user = await ctx.auth.createUser({ email, name, role, password }, 'cli', !supplied);
   console.log(`Created ${user.role} ${user.email}.`);
@@ -16,4 +16,4 @@ try {
 } catch (e) {
   console.error((e as Error).message);
   process.exitCode = 1;
-} finally { ctx.close(); }
+} finally { await ctx.close(); }

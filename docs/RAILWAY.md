@@ -1,24 +1,27 @@
 # Railway staging deploy
 
-Why Railway: the app is one long-running Node process with SQLite + private PDF storage, so it needs a **persistent volume** (not serverless).
+The app is a single Node process + **managed Postgres**. PDFs are stored in Postgres, so there is **no volume** to manage and
+the server itself is stateless (you can redeploy or restart freely; data lives in the database).
 
-**Status: configured but NOT deployed.** The build container that prepared this had no route to railway.com and no token, so none of
-the Railway steps below has been executed or tested against Railway. The app itself was verified in production mode locally.
+**Status: configured but NOT deployed.** The environment that prepared this had no route to railway.com and no token, so none of the
+Railway steps has been executed against Railway. What *was* verified: the production build against a real Postgres 16 server
+(boot with `DATABASE_URL`, bootstrap admin, staging gate, data surviving a restart) and the full test suite on a real Postgres.
 
 ## What is in the repo
-* `railway.json` — Railpack build (`npm ci --include=dev && npm run build`), `node dist/server/server/index.js`, health check `/api/health`, single replica.
-* `.node-version` = 22 (needs `node:sqlite`).
-* `scripts/railway-deploy.sh` — creates the `/data` volume, generates secrets (written only to Railway), sets variables, deploys.
-* `STAGING_BASIC_AUTH=user:password` — puts the whole site behind HTTP Basic auth (health check excluded). **Keep this on** until `npm run launch-check` passes.
+* `railway.json` — Railpack build (`npm ci --include=dev && npm run build`), start `node dist/server/server/index.js`, health check `/api/health`.
+* `.node-version` = 22.
+* `scripts/railway-deploy.sh` — adds the Postgres service, generates secrets (written only to Railway), references `${{Postgres.DATABASE_URL}}`, deploys.
+* `STAGING_BASIC_AUTH` — whole site behind HTTP Basic auth (health check excluded). **Keep it on** until `npm run launch-check` passes.
+* `BOOTSTRAP_ADMIN_EMAIL` / `BOOTSTRAP_ADMIN_PASSWORD` — creates the first admin on boot when none exists (no shell needed). Remove after first sign-in.
 
 ## Deploy
-1. Railway dashboard → New Project → Empty project; Project Settings → Tokens → create a **project token**.
-2. `export RAILWAY_TOKEN=…` then `scripts/railway-deploy.sh` (or do the same by hand: add volume at `/data`, set the variables in the script, `railway up`).
-3. Generate a domain (Service → Settings → Networking) and set `PUBLIC_BASE_URL` to it (the script does this if a domain already exists).
-4. Create the first admin: `railway run npm run create-admin -- you@example.com "Your Name" admin` (a temporary password is printed once).
-5. Check `/api/health`, sign in at `/admin`, run Launch readiness.
+1. Railway → New Project → Empty project; Project Settings → Tokens → create a **project token**.
+2. `export RAILWAY_TOKEN=… ADMIN_EMAIL=you@example.com && scripts/railway-deploy.sh` (or in the dashboard: add the Postgres plugin, set the variables listed in the script, deploy).
+3. Service → Settings → Networking → Generate Domain; set `PUBLIC_BASE_URL` to it.
+4. Open the URL (staging login from the script), sign in at `/admin` with the bootstrap admin, change the password, then remove the `BOOTSTRAP_ADMIN_*` variables.
+5. Admin → Launch readiness lists what still blocks a public launch.
 
-## Caveats
-* One replica only (SQLite file + in-memory rate limiter). Back up the volume (Railway volume backups) before relying on it.
-* Email stays queued until `MAIL_WEBHOOK_URL` is set.
-* Staging data is test data. Don't point real users at it.
+## Notes
+* Several replicas are safe for data (migrations take an advisory lock; verified with concurrent boots). The rate limiter is in-memory per instance, so put an edge limiter in front before scaling out.
+* Use Railway's Postgres backups; PDFs are included because they are in the database. Use `DATABASE_SSL=require` if you connect over the public proxy URL.
+* Email stays queued until `MAIL_WEBHOOK_URL` is set. Staging data is test data.

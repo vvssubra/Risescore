@@ -13,7 +13,8 @@ Standalone, production-oriented build of the Balla DK **R.I.S.E.™ Financial** 
 
 ```bash
 npm install
-npm run seed                                   # DB + 14 built-in worksheets + default matching rules
+npm run seed                                   # embedded Postgres (PGlite) + 14 built-in worksheets + default matching rules
+# production / real Postgres: export DATABASE_URL=postgres://user:pass@host:5432/db   (required when NODE_ENV=production)
 ADMIN_PASSWORD='Use-A-Strong-Passw0rd' npm run create-admin -- you@example.com "Your Name" admin
 npm run dev:server        # API on :3000
 npm run dev:client        # Vite on :5173 (proxies /api)  → http://localhost:5173  and /admin.html
@@ -26,7 +27,8 @@ and the server refuses to start without them). Public app at `/`, staff console 
 
 | Command | What it does |
 |---|---|
-| `npm test` | 99 unit/API tests: scoring (31), toolkits (27), public API (22), admin/RBAC/PDF workflow (19) |
+| `npm test` | 110 unit/API tests on embedded Postgres: scoring (31), toolkits (27), public API (23), admin/RBAC/PDF workflow (19), database layer (10) |
+| `npm run test:pg` | The API suites against a **real Postgres server** (`TEST_DATABASE_URL`, default `postgres://postgres@localhost:5433/rise_test`), incl. concurrent uploads/boots |
 | `npm run test:scoring` | 24 named cases + 10,000 random combinations compared byte-for-byte with the verbatim v2.0 engine |
 | `npm run test:toolkits` | 14 templates, 360+ profile routes, 12 alert mappings vs the verbatim v3 matcher |
 | `npm run test:e2e` | Playwright on a 375 px phone **and** desktop: both tracks, gate, report, worksheet, WhatsApp, erase, admin, axe-core WCAG 2.2 AA, CSP-violation guard |
@@ -41,7 +43,7 @@ and the server refuses to start without them). Public app at `/`, staff console 
 
 ```
 src/shared    pure TypeScript used by browser and server: questions, engine, plans/alert text, toolkit templates + matching rules, legal text
-src/server    Express API, node:sqlite, crypto, auth, services (assessments, reports, toolkits), mail outbox, retention
+src/server    Express API, Postgres (pg; embedded PGlite for dev/tests), crypto, auth, services (assessments, reports, toolkits), mail outbox, retention
 src/client    Vite app (public flow) + admin console, self-hosted fonts, strict-CSP-safe rendering
 tests         vitest (unit/API) · e2e (Playwright) · reference (golden v2.0 engine + v3 matcher, verbatim)
 reference     QUESTION_BANK.csv audit copy (a test asserts the typed config matches it exactly)
@@ -65,5 +67,5 @@ docs          decision, handoff, migration plan, security notes, release checkli
 ## Not done / needs a decision (see docs/RELEASE_CHECKLIST.md)
 
 Nothing has been deployed, no real lead data migrated, payments not enabled. Open items: legal review of the privacy notice and toolkit wording,
-BM question translations, an email provider (`MAIL_WEBHOOK_URL`), hosting choice (SQLite + local disk suits one instance; use Postgres/S3 adapters to scale out),
+BM question translations, an email provider (`MAIL_WEBHOOK_URL`), hosting choice (Railway + its Postgres is configured but not deployed — see docs/RAILWAY.md),
 human usability testing before calling the score "validated".

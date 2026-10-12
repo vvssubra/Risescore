@@ -28,7 +28,7 @@ describe('staff authentication', () => {
     expect(cookie).toMatch(/HttpOnly/);
     expect(cookie).toMatch(/SameSite=Strict/);
     expect(JSON.stringify(ok.data)).not.toContain('password');
-    expect(app.rawDb()).not.toContain(c.cookie.split('=')[1]); // session id stored only as a hash
+    expect(await app.rawDb()).not.toContain(c.cookie.split('=')[1]); // session id stored only as a hash
   });
 
   it('enforces a CSRF token on every state-changing request', async () => {
@@ -187,7 +187,7 @@ describe('toolkit PDF library: upload → review → publish → versioning', ()
     await e.post(`/api/admin/versions/${v3.id}/submit`, {});
     await rev.post(`/api/admin/versions/${v3.id}/review`, { decision: 'publish', reviewExpiresAt: '2999-01-01' });
     expect((await new Client(app.url).get('/api/toolkits')).data.toolkits.map((t: any) => t.id)).toContain(tid);
-    app.ctx.db.run("UPDATE toolkit_versions SET review_expires_at='2020-01-01T00:00:00.000Z' WHERE id=?", v3.id);
+    await app.ctx.db.run("UPDATE toolkit_versions SET review_expires_at='2020-01-01T00:00:00.000Z' WHERE id=?", v3.id);
     expect((await new Client(app.url).get('/api/toolkits')).data.toolkits.map((t: any) => t.id)).not.toContain(tid);
     expect((await new Client(app.url).get(app.ctx.reports.signFileUrl(v3.id))).status).toBe(410);
   });
@@ -199,14 +199,14 @@ describe('toolkit PDF library: upload → review → publish → versioning', ()
     await e.post(`/api/admin/versions/${v.id}/submit`, {});
     expect((await rev.post(`/api/admin/versions/${v.id}/review`, { decision: 'reject', note: 'Typos on page 2' })).data.status).toBe('rejected');
     expect((await e.del(`/api/admin/versions/${v.id}`)).status).toBe(204);
-    expect(app.ctx.db.get('SELECT 1 x FROM toolkit_versions WHERE id=?', v.id)).toBeUndefined();
-    const published = app.ctx.db.get("SELECT id FROM toolkit_versions WHERE status='published' LIMIT 1")!;
+    expect(await app.ctx.db.get('SELECT 1 x FROM toolkit_versions WHERE id=?', v.id)).toBeUndefined();
+    const published = (await app.ctx.db.get("SELECT id FROM toolkit_versions WHERE status='published' LIMIT 1"))!;
     expect((await e.del(`/api/admin/versions/${published.id}`)).data.error).toBe('bad_state');
   });
 
   it('admin can preview any stored PDF through the authenticated route only', async () => {
     const rev = await login('reviewer@example.com');
-    const id = app.ctx.db.get('SELECT id FROM toolkit_versions LIMIT 1')!.id;
+    const id = (await app.ctx.db.get('SELECT id FROM toolkit_versions LIMIT 1'))!.id;
     const r = await rev.get(`/api/admin/versions/${id}/file`);
     expect(r.status).toBe(200);
     expect(r.headers.get('content-type')).toBe('application/pdf');

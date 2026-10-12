@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
@@ -10,28 +10,47 @@ import { defaultProfile } from '../src/shared/profile.ts';
 import { templateAnswers } from '../src/shared/engine.ts';
 import type { Answers, Profile } from '../src/shared/types.ts';
 
+/**
+ * The whole API suite runs against embedded Postgres (PGlite) by default, and against a REAL Postgres server when
+ * TEST_DATABASE_URL is set (each test app gets its own throw-away schema): `npm run test:pg`.
+ */
+export const TEST_DB_URL = process.env.TEST_DATABASE_URL;
+
 export interface TestApp {
   ctx: Context;
   url: string;
   dir: string;
   stop(): Promise<void>;
-  /** Raw bytes of the SQLite database (+WAL), to prove nothing sensitive is stored in plaintext. */
-  rawDb(): string;
+  /** Everything stored in every table, serialised — proves nothing sensitive is kept in plaintext. */
+  rawDb(): Promise<string>;
 }
 
+let seq = 0;
 export async function startApp(env: Record<string, string> = {}): Promise<TestApp> {
   const dir = mkdtempSync(join(tmpdir(), 'rise-test-'));
-  const cfg = loadConfig({ NODE_ENV: 'test', DATA_DIR: dir, PUBLIC_BASE_URL: 'http://localhost:3999', RATE_LIMIT_DISABLED: 'true', ...env }, {});
-  const ctx = createContext(cfg);
+  const schema = `t_${process.pid}_${Date.now().toString(36)}_${++seq}`;
+  const dbEnv: Record<string, string> = TEST_DB_URL ? { DATABASE_URL: TEST_DB_URL, DATABASE_SCHEMA: schema, DATABASE_POOL_MAX: '5' } : { PGLITE_PATH: 'memory://' };
+  const cfg = loadConfig({ NODE_ENV: 'test', DATA_DIR: dir, PUBLIC_BASE_URL: 'http://localhost:3999', RATE_LIMIT_DISABLED: 'true', ...dbEnv, ...env }, {});
+  const ctx = await createContext(cfg);
   const app = createApp(ctx, { clientDir: join(dir, 'none') });
   const server: Server = await new Promise((res) => { const s = app.listen(0, '127.0.0.1', () => res(s)); });
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   return {
     ctx, url, dir,
-    async stop() { await new Promise((r) => server.close(() => r(null))); ctx.close(); rmSync(dir, { recursive: true, force: true }); },
-    rawDb() {
-      ctx.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
-      return [cfg.dbPath, cfg.dbPath + '-wal'].filter(existsSync).map((p) => readFileSync(p, 'latin1')).join('\n');
+    async stop() {
+      await new Promise((r) => server.close(() => r(null)));
+      if (TEST_DB_URL) await ctx.db.exec(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`).catch(() => undefined);
+      await ctx.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+    async rawDb() {
+      const tables = await ctx.db.all<{ table_name: string }>("SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema() AND table_type='BASE TABLE'");
+      let out = '';
+      for (const t of tables) {
+        const rows = await ctx.db.all(`SELECT * FROM "${t.table_name}"`);
+        out += JSON.stringify(rows, (_k, v) => (v && v.type === 'Buffer' ? Buffer.from(v.data).toString('latin1') : typeof v === 'bigint' ? String(v) : v)) + '\n';
+      }
+      return out;
     },
   };
 }
