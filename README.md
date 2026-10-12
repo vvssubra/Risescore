@@ -32,6 +32,7 @@ and the server refuses to start without them). Public app at `/`, staff console 
 | `npm run test:scoring` | 24 named cases + 10,000 random combinations compared byte-for-byte with the verbatim v2.0 engine |
 | `npm run test:toolkits` | 14 templates, 360+ profile routes, 12 alert mappings vs the verbatim v3 matcher |
 | `npm run test:e2e` | Playwright on a 375 px phone **and** desktop: both tracks, gate, report, worksheet, WhatsApp, erase, admin, axe-core WCAG 2.2 AA, CSP-violation guard |
+| `npm run build:demo` | Builds `dist-demo/artifact.html`: one self-contained, backend-free clickable demo (real engine + toolkit rules; nothing saved) |
 | `npm run launch-check` | Exits non-zero while blocking pre-launch items remain |
 | `npm run purge` | Applies retention (also runs automatically every 15 min) |
 

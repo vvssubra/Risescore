@@ -1,0 +1,31 @@
+<title>R.I.S.E.™ Scorecard Preview</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@700;800&display=swap">
+<style>
+/*__CSS__*/
+/* Deliberately a single light, navy / ivory / gold look (the brand), so the page sets every colour explicitly. */
+:root{color-scheme:light}
+body{min-height:0}
+.demo-banner{background:#10253d;color:#f3e6cc;font:600 13px/1.5 'DM Sans',system-ui,sans-serif;padding:10px 16px;text-align:center}
+.demo-banner strong{color:#f5dfb9;letter-spacing:.08em;margin-right:8px}
+/* the viewer cannot open a print dialog, so the print buttons would do nothing */
+[data-action="print"],[data-ws-print]{display:none!important}
+.site-header{position:relative}
+</style>
+<div class="demo-banner" role="note"><strong>DEMO</strong>Runs entirely in this page: the real scoring and toolkit rules, but nothing is saved or sent. Use any name and email.</div>
+<a class="skip-link-nav" href="#app" id="skipLink">Skip to main content</a>
+<div class="topline"></div>
+<header class="site-header"><div class="header-inner">
+  <a class="brand" href="#" id="homeLink" aria-label="R.I.S.E. by Balla DK, return to start"><span class="brand-mark" aria-hidden="true">R<span class="brand-dot">.</span></span><span class="brand-text"><strong>R.I.S.E.<sup>™</sup></strong><small id="brandBy">BY BALLA DK</small></span></a>
+  <div class="nav-right"><span class="nav-trust"><span class="status-dot" aria-hidden="true"></span> <span id="navTrust">Personalised assessment</span></span>
+  <button type="button" id="langBtn" class="nav-reset lang-btn" lang="ms">Bahasa Malaysia</button>
+  <button type="button" id="restartBtn" class="nav-reset" hidden>Start over <span aria-hidden="true">↗</span></button></div>
+</div></header>
+<main id="app" class="app-shell" tabindex="-1"></main>
+<div id="announcer" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+<footer class="site-footer"><div class="footer-inner"><span id="footLeft">© Balla DK · R.I.S.E.™ Roadmap</span><span id="footRight">Educational self-assessment, not a regulated financial plan or certified diagnosis.</span><button type="button" class="linklike" id="footPrivacy">Privacy notice</button></div></footer>
+<div id="modalRoot"></div>
+<script>
+/*__JS__*/
+</script>
