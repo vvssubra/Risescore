@@ -171,6 +171,7 @@ const en: Dict = {
   'report.privacy.deleted.h1': 'Your data has been deleted',
   'report.privacy.deleted.p': 'Your report, answers, name and email were erased and the link no longer works.',
   'report.privacy.fail': 'We couldn’t complete that. Please try again.',
+  'print.coverage': 'Answer coverage: {n}%', 'print.pillarCov': '{n}% pillar coverage', 'print.focus': 'FOCUS', 'print.overall': 'OVERALL', 'print.scorecard': 'SCORECARD', 'print.page': 'PAGE {n} OF {total}',
 
   'ws.eyebrow': 'R.I.S.E.™ INTERACTIVE WORKSHEET',
   'ws.close': 'Close',
@@ -350,6 +351,7 @@ const ms: Dict = {
   'report.privacy.deleted.h1': 'Data anda telah dipadam',
   'report.privacy.deleted.p': 'Laporan, jawapan, nama dan e-mel anda telah dipadam dan pautan tidak lagi berfungsi.',
   'report.privacy.fail': 'Kami tidak dapat melengkapkannya. Sila cuba lagi.',
+  'print.coverage': 'Liputan jawapan: {n}%', 'print.pillarCov': '{n}% liputan tonggak', 'print.focus': 'FOKUS', 'print.overall': 'KESELURUHAN', 'print.scorecard': 'KAD SKOR', 'print.page': 'HALAMAN {n} DARIPADA {total}',
 
   'ws.eyebrow': 'LEMBARAN KERJA INTERAKTIF R.I.S.E.™',
   'ws.close': 'Tutup',

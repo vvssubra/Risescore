@@ -3,6 +3,7 @@ import type { ReportView } from '../lib/api.ts';
 import { e, formatDate, icons } from '../lib/dom.ts';
 import { getLocale, t } from '../lib/i18n.ts';
 import { state } from '../lib/store.ts';
+import { printReport } from './report-print.ts';
 import { pillarLabel, scoreDial } from './shared.ts';
 
 export function reportLoading() {
@@ -61,5 +62,5 @@ export function fullReport(r: ReportView) {
   <p class="fineprint" id="mktState" aria-live="polite">${e(r.consent.marketingOptIn ? t('report.privacy.mktOn') : t('report.privacy.mktOff'))}</p>
   <p class="fineprint">${e(t('report.expires', { date: formatDate(r.expiresAt, getLocale()) }))}</p>
   <button class="ghost-btn danger" data-action="erase">${e(t('report.privacy.delete'))}</button></article>
-  <p class="report-note">${e(res.disclaimer)}<br><br>${e(t('report.advice'))}</p></aside></div></section>`;
+  <p class="report-note">${e(res.disclaimer)}<br><br>${e(t('report.advice'))}</p></aside></div>${printReport(r, location.href)}</section>`;
 }

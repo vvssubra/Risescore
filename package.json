@@ -2,7 +2,7 @@
   "name": "rise-scorecard",
   "version": "0.1.0",
   "private": true,
-  "description": "R.I.S.E.\u2122 Financial and Career & Income scorecard \u2014 standalone application by Balla DK",
+  "description": "R.I.S.E.™ Financial and Career & Income scorecard — standalone application by Balla DK",
   "type": "module",
   "engines": {
     "node": ">=22.13"
@@ -34,6 +34,7 @@
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.13.0",
+    "@fontsource/cormorant-garamond": "^5.3.0",
     "@fontsource/dm-sans": "^5.3.0",
     "@fontsource/manrope": "^5.3.0",
     "@playwright/test": "^1.55.0",

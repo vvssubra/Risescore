@@ -134,6 +134,13 @@ test.describe('public journey', () => {
     await expect(page.getByRole('heading', { name: 'Your roadmap, Aisyah.' })).toBeVisible();
     await expect(page).toHaveURL(/\/report\/[\w-]{40,}$/);
     await expect(page.locator('.pillar-line')).toHaveCount(4);
+    // branded A4 layout for Save as PDF: hidden on screen, swapped in for print
+    await expect(page.locator('.print-report')).toBeHidden();
+    await page.emulateMedia({ media: 'print' });
+    await expect(page.locator('.print-report .pr-page')).toHaveCount(2);
+    await expect(page.locator('.print-report .pr-pillar')).toHaveCount(4);
+    await expect(page.locator('.report-grid')).toBeHidden();
+    await page.emulateMedia({ media: 'screen' });
     await expect(page.locator('.action-list li')).toHaveCount(3);
     await expect(page.locator('.alert-item').first()).toContainText('Essential payments need attention');
     await expect(page.locator('.toolkit-card').first()).toContainText('30-Day Financial Reset');
