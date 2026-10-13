@@ -262,6 +262,27 @@ CREATE TABLE files (
 );
 `,
   },
+  {
+    // V4.3 + V4.4: reports unlock only TK01–TK08 via server-computed priorities (no editable matching rules),
+    // and a prospect can hand a report to staff through a short-lived, staff-login-protected link.
+    version: 2,
+    sql: `
+DROP TABLE IF EXISTS toolkit_rules;
+UPDATE toolkits SET active = 0 WHERE builtin = 1 AND id NOT IN ('TK01','TK02','TK03','TK04','TK05','TK06','TK07','TK08');
+CREATE TABLE handover_links (
+  id TEXT PRIMARY KEY,
+  request_id TEXT NOT NULL UNIQUE REFERENCES report_requests(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  revoked_at TEXT,
+  open_count INTEGER NOT NULL DEFAULT 0,
+  last_opened_at TEXT,
+  last_opened_by TEXT
+);
+CREATE INDEX idx_handover_links_expires ON handover_links(expires_at);
+`,
+  },
 ];
 
 /** Applies pending migrations under a transaction-scoped advisory lock so several instances can boot at once. */

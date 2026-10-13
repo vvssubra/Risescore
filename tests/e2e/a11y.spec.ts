@@ -1,6 +1,6 @@
 import AxeBuilder from '@axe-core/playwright';
 import type { Page } from '@playwright/test';
-import { answer, answerAll, completeProfile, expect, startTrack, test } from './helpers';
+import { answer, answerAll, completeProfile, expect, startTrack, submitReview, test } from './helpers';
 
 const TAGS = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'];
 
@@ -33,7 +33,8 @@ test.describe('WCAG 2.2 AA (axe-core) on every screen', () => {
     await startTrack(page, 'financial');
     await completeProfile(page, [0, 2, 0, 0]);
     await answerAll(page, (i) => (i === 0 ? 'last' : 'first'));
-    await expect(page.getByRole('heading', { name: /snapshot is ready/i })).toBeVisible();
+    await audit(page, 'answer check');
+    await submitReview(page);
     await audit(page, 'preview');
     await page.getByRole('button', { name: /View my full report/ }).click();
     await expect(page.getByRole('heading', { name: /One more step/ })).toBeVisible();
@@ -49,9 +50,14 @@ test.describe('WCAG 2.2 AA (axe-core) on every screen', () => {
     await page.getByRole('button', { name: /Get my full report/ }).click();
     await expect(page.getByRole('heading', { name: /Your roadmap, Nur/ })).toBeVisible();
     await audit(page, 'full report');
-    await page.getByRole('button', { name: /Open recommended worksheet/ }).click();
-    await audit(page, 'worksheet dialog');
+    await page.locator('#waBtn').click();
+    await expect(page.getByRole('dialog')).toBeVisible();
+    await audit(page, 'WhatsApp handover dialog');
     await page.keyboard.press('Escape');
+    await page.getByRole('button', { name: /Open interactive planner/ }).first().click();
+    await audit(page, 'planner start');
+    for (let i = 0; i < 5; i++) { await page.locator('[data-wb-nav="next"]').click(); await audit(page, `planner step ${i + 2}`); }
+    await page.locator('[data-wb-nav="exit"]').first().click();
     await page.locator('#langBtn').click();
     await audit(page, 'full report (Bahasa Malaysia)');
   });
@@ -60,6 +66,7 @@ test.describe('WCAG 2.2 AA (axe-core) on every screen', () => {
     await startTrack(page, 'career');
     await completeProfile(page, [1, 2, 0, 2, 2]);
     await answerAll(page, (i) => (i === 1 ? 'last' : 'first'));
+    await submitReview(page);
     await audit(page, 'career preview');
   });
 });

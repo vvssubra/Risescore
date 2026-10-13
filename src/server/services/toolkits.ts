@@ -5,9 +5,10 @@ import { sha256Hex } from '../crypto.ts';
 import type { Db, Queryable, Row } from '../db.ts';
 import type { ObjectStore } from '../storage.ts';
 import { audit } from './audit.ts';
-import { TOOLKIT_TEMPLATES, FALLBACK_TOOLKIT_ID, type WorksheetSection } from '../../shared/toolkit-templates.ts';
-import { DEFAULT_RULES, matchToolkitIds, type MatchRule } from '../../shared/toolkit-rules.ts';
-import type { AssessmentResult, Profile } from '../../shared/types.ts';
+import { entitledToolkits } from '../../shared/priorities.ts';
+import type { AssessmentResult } from '../../shared/types.ts';
+import type { Workbook } from '../../shared/workbook.ts';
+import { WORKBOOKS } from '../workbooks.ts';
 
 export class HttpError extends Error {
   constructor(public status: number, message: string, public code = 'error') { super(message); }
@@ -16,49 +17,19 @@ export class HttpError extends Error {
 export type Role = 'admin' | 'reviewer' | 'editor';
 export interface Actor { id: string; email: string; role: Role }
 
-const GENERIC_SECTIONS: WorksheetSection[] = [
-  ['Understand', 'Describe the relevant facts and your present situation.'],
-  ['Define', 'Write a specific goal and measure of progress.'],
-  ['Consider', 'Compare options, costs, risks and alternatives.'],
-  ['Act', 'Write one achievable next action and target date.'],
-  ['Review', 'Check results and update your plan.'],
-];
-
 const nowIso = () => new Date().toISOString();
 
-const toolkitInput = z.object({
+/** Admins may rename, re-describe or switch off a toolkit. Which toolkit a report unlocks is fixed by the V4.3 priority rules. */
+export const toolkitPatchSchema = z.object({
   title: z.string().trim().min(3).max(120),
   description: z.string().trim().min(10).max(300),
-  track: z.enum(['financial', 'career', 'both']),
-  pillar: z.enum(['R', 'I', 'S', 'E']),
-  minutes: z.string().trim().min(1).max(20).default('15 min'),
-  locale: z.enum(['en', 'ms']).default('en'),
-});
-export const toolkitCreateSchema = toolkitInput;
-export const toolkitPatchSchema = toolkitInput.partial().extend({ active: z.boolean().optional() });
+  minutes: z.string().trim().min(1).max(20),
+  active: z.boolean(),
+}).partial().strict();
 
-const whenSchema = z.object({
-  alert: z.enum(['cash_crisis', 'debt_arrears', 'fragile_buffer', 'dependent_cover', 'investing_essential', 'concentration', 'business_feasibility', 'career_arrears', 'switch_runway', 'sales_authorisation', 'unit_trust_age', 'weak_business_model']).optional(),
-  priority: z.enum(['R', 'I', 'S', 'E']).optional(),
-  allStrong: z.boolean().optional(),
-  goals: z.array(z.string().max(40)).max(12).optional(),
-  roles: z.array(z.string().max(40)).max(12).optional(),
-  dependants: z.enum(['yes', 'no', 'unsure']).optional(),
-}).strict();
+const WORKBOOK_BY_ID: ReadonlyMap<string, Workbook> = new Map(WORKBOOKS.map((w) => [w.id, w]));
 
-export const ruleSchema = z.object({
-  toolkitId: z.string().min(1).max(80),
-  stage: z.enum(['fallback', 'alert', 'primary', 'profile']),
-  track: z.enum(['financial', 'career', 'both']),
-  order: z.number().int().min(0).max(1000),
-  active: z.boolean().default(true),
-  when: whenSchema.default({}),
-}).superRefine((r, ctx) => {
-  if (r.stage === 'alert' && !r.when.alert) ctx.addIssue({ code: 'custom', message: 'An alert rule needs an alert.', path: ['when', 'alert'] });
-  if (r.stage === 'primary' && !r.when.allStrong && !r.when.priority) ctx.addIssue({ code: 'custom', message: 'A primary rule needs a priority pillar or "all strong".', path: ['when'] });
-  if (r.stage === 'profile' && !Object.keys(r.when).length) ctx.addIssue({ code: 'custom', message: 'A profile rule needs at least one condition.', path: ['when'] });
-});
-
+/** A toolkit as unlocked by one report: its interactive workbook plus (if published) a PDF. */
 export interface PublicToolkit {
   id: string;
   title: string;
@@ -66,28 +37,22 @@ export interface PublicToolkit {
   minutes: string;
   track: string;
   pillar: string;
-  sections: WorksheetSection[];
+  workbook: Workbook;
   pdf: { versionId: number; filename: string; sizeBytes: number } | null;
 }
 
 export class ToolkitService {
   constructor(private db: Db, private store: ObjectStore, private cfg: Config) {}
 
-  /** Idempotent: inserts the 14 built-in worksheets and their default matching rules if missing. */
+  /** Idempotent: inserts the eight V4.3 toolkits (TK01–TK08) if missing. Admin edits to title/description are kept. */
   async seedBuiltins() {
     const t = nowIso();
     await this.db.tx(async (tx) => {
-      for (const k of TOOLKIT_TEMPLATES) {
+      for (const w of WORKBOOKS) {
         await tx.run(
           `INSERT INTO toolkits (id,title,description,track,pillar,locale,minutes,builtin,sections_json,active,created_at,updated_at)
-           VALUES (?,?,?,?,?,'en',?,1,?,1,?,?) ON CONFLICT (id) DO NOTHING`,
-          k.id, k.title, k.sub, k.track, k.pillar, k.minutes, JSON.stringify(k.sections), t, t,
-        );
-      }
-      for (const r of DEFAULT_RULES) {
-        await tx.run(
-          `INSERT INTO toolkit_rules (id,toolkit_id,stage,track,sort_order,active,when_json,updated_at) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT (id) DO NOTHING`,
-          r.id, r.toolkitId, r.stage, r.track, r.order, r.active ? 1 : 0, JSON.stringify(r.when), t,
+           VALUES (?,?,?,?,?,'en',?,1,NULL,1,?,?) ON CONFLICT (id) DO NOTHING`,
+          w.id, w.title, w.subtitle, w.track, w.pillar, w.minutes, t, t,
         );
       }
     });
@@ -95,11 +60,12 @@ export class ToolkitService {
 
   // ---------- reads ----------
   private hydrate(row: Row) {
-    return { ...row, builtin: !!row.builtin, active: !!row.active, sections: row.sections_json ? (JSON.parse(row.sections_json) as WorksheetSection[]) : null, sections_json: undefined };
+    return { ...row, builtin: !!row.builtin, active: !!row.active, assignable: WORKBOOK_BY_ID.has(row.id), sections_json: undefined };
   }
 
   async listAdmin() {
-    const rows = await this.db.all('SELECT * FROM toolkits ORDER BY builtin DESC, title');
+    // Retired pre-V4.3 worksheets stay listed (inactive) so their PDF history remains auditable.
+    const rows = await this.db.all('SELECT * FROM toolkits ORDER BY active DESC, id');
     return Promise.all(rows.map(async (r) => ({ ...this.hydrate(r), versions: await this.versions(r.id), currentPdf: await this.currentPdf(r.id) })));
   }
 
@@ -133,77 +99,34 @@ export class ToolkitService {
     );
   }
 
-  /** Toolkits that may be offered to the public right now. */
-  async availableIds(): Promise<Set<string>> {
-    const ids = new Set<string>();
-    const live = await this.db.all<{ toolkit_id: string }>(
-      `SELECT DISTINCT toolkit_id FROM toolkit_versions WHERE status='published' AND (review_expires_at IS NULL OR review_expires_at > ?)`, nowIso());
-    const withPdf = new Set(live.map((r) => r.toolkit_id));
-    for (const t of await this.db.all('SELECT id, builtin FROM toolkits WHERE active=1')) {
-      if (t.builtin || withPdf.has(t.id)) ids.add(t.id);
+  /**
+   * The toolkits a report unlocks: ONLY the 1–2 named by its server-computed priorities, and only while the
+   * toolkit is active. Unassigned toolkits are never returned, so there is no public library to browse.
+   */
+  async forResult(result: AssessmentResult): Promise<PublicToolkit[]> {
+    const out: PublicToolkit[] = [];
+    for (const id of entitledToolkits(result)) {
+      const workbook = WORKBOOK_BY_ID.get(id);
+      const t = await this.db.get('SELECT * FROM toolkits WHERE id=? AND active=1', id);
+      if (!workbook || !t) continue;
+      const pdf = await this.currentPdf(id);
+      out.push({
+        id, title: t.title, sub: t.description, minutes: t.minutes, track: t.track, pillar: t.pillar, workbook,
+        pdf: pdf ? { versionId: pdf.id, filename: pdf.filename, sizeBytes: pdf.size_bytes } : null,
+      });
     }
-    return ids;
-  }
-
-  async rules(): Promise<MatchRule[]> {
-    return (await this.db.all('SELECT * FROM toolkit_rules')).map((r) => ({
-      id: r.id, toolkitId: r.toolkit_id, stage: r.stage, track: r.track, order: r.sort_order, active: !!r.active, when: JSON.parse(r.when_json),
-    }));
-  }
-
-  async publicView(id: string): Promise<PublicToolkit | null> {
-    const t = await this.db.get('SELECT * FROM toolkits WHERE id=? AND active=1', id);
-    if (!t) return null;
-    const pdf = await this.currentPdf(id);
-    const sections = t.sections_json ? (JSON.parse(t.sections_json) as WorksheetSection[]) : [];
-    if (!t.builtin && !pdf) return null;
-    return {
-      id: t.id, title: t.title, sub: t.description, minutes: t.minutes, track: t.track, pillar: t.pillar,
-      sections: sections.length ? sections : GENERIC_SECTIONS,
-      pdf: pdf ? { versionId: pdf.id, filename: pdf.filename, sizeBytes: pdf.size_bytes } : null,
-    };
-  }
-
-  /** Public library (titles only, published/active). */
-  async publicLibrary() {
-    const views = await Promise.all([...(await this.availableIds())].map((id) => this.publicView(id)));
-    return views.filter((x): x is PublicToolkit => !!x).map(({ sections: _s, ...rest }) => ({ ...rest, hasPdf: !!rest.pdf, pdf: undefined }));
-  }
-
-  /** Matching: rules (DB) + availability (DB) + the pure shared matcher. Never returns an empty list. */
-  async matchFor(report: AssessmentResult, profile: Profile): Promise<PublicToolkit[]> {
-    const ids = matchToolkitIds(report, profile, await this.rules(), await this.availableIds());
-    const views = (await Promise.all(ids.map((id) => this.publicView(id)))).filter((x): x is PublicToolkit => !!x);
-    if (views.length) return views;
-    const fb = TOOLKIT_TEMPLATES.find((t) => t.id === FALLBACK_TOOLKIT_ID)!;
-    return [{ id: fb.id, title: fb.title, sub: fb.sub, minutes: fb.minutes, track: fb.track, pillar: fb.pillar, sections: fb.sections, pdf: null }];
+    return out;
   }
 
   // ---------- writes ----------
-  async create(input: unknown, actor: Actor) {
-    const d = toolkitCreateSchema.parse(input);
-    const base = d.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'toolkit';
-    let id = base;
-    for (let i = 2; await this.db.get('SELECT 1 FROM toolkits WHERE id=?', id); i++) id = `${base}-${i}`;
-    const t = nowIso();
-    await this.db.run(
-      `INSERT INTO toolkits (id,title,description,track,pillar,locale,minutes,builtin,sections_json,active,created_by,created_at,updated_at)
-       VALUES (?,?,?,?,?,?,?,0,NULL,1,?,?,?)`,
-      id, d.title, d.description, d.track, d.pillar, d.locale, d.minutes, actor.id, t, t,
-    );
-    await audit(this.db, actor.email, 'toolkit.create', 'toolkit', id);
-    return this.hydrate(await this.getToolkit(id));
-  }
-
   async update(id: string, input: unknown, actor: Actor) {
     const d = toolkitPatchSchema.parse(input);
     const cur = await this.getToolkit(id);
-    if (cur.builtin && (d.track !== undefined || d.pillar !== undefined)) throw new HttpError(400, 'Built-in toolkits keep their track and pillar.', 'builtin_locked');
-    if (d.active === false && id === FALLBACK_TOOLKIT_ID) throw new HttpError(400, 'The safe fallback toolkit cannot be deactivated.', 'fallback_required');
+    if (d.active === true && !WORKBOOK_BY_ID.has(id)) throw new HttpError(400, 'Retired worksheets cannot be re-activated: reports only unlock TK01–TK08.', 'retired');
     const next = { ...cur, ...Object.fromEntries(Object.entries(d).filter(([, v]) => v !== undefined)) } as Row;
     await this.db.run(
-      'UPDATE toolkits SET title=?, description=?, track=?, pillar=?, minutes=?, locale=?, active=?, updated_at=? WHERE id=?',
-      next.title, next.description, next.track, next.pillar, next.minutes, next.locale, typeof d.active === 'boolean' ? (d.active ? 1 : 0) : cur.active, nowIso(), id,
+      'UPDATE toolkits SET title=?, description=?, minutes=?, active=?, updated_at=? WHERE id=?',
+      next.title, next.description, next.minutes, typeof d.active === 'boolean' ? (d.active ? 1 : 0) : cur.active, nowIso(), id,
     );
     await audit(this.db, actor.email, 'toolkit.update', 'toolkit', id, d);
     return this.hydrate(await this.getToolkit(id));
@@ -297,27 +220,6 @@ export class ToolkitService {
     await this.db.run('DELETE FROM toolkit_versions WHERE id=?', versionId);
     await this.store.delete(v.storage_key);
     await audit(this.db, actor.email, 'version.delete', 'version', versionId);
-  }
-
-  async upsertRule(id: string | null, input: unknown, actor: Actor): Promise<MatchRule> {
-    const r = ruleSchema.parse(input);
-    await this.getToolkit(r.toolkitId);
-    const ruleId = id ?? `rule-${randomBytes(5).toString('hex')}`;
-    if (id && !(await this.db.get('SELECT 1 FROM toolkit_rules WHERE id=?', id))) throw new HttpError(404, 'Rule not found.', 'not_found');
-    await this.db.run(
-      `INSERT INTO toolkit_rules (id,toolkit_id,stage,track,sort_order,active,when_json,updated_by,updated_at) VALUES (?,?,?,?,?,?,?,?,?)
-       ON CONFLICT(id) DO UPDATE SET toolkit_id=excluded.toolkit_id, stage=excluded.stage, track=excluded.track, sort_order=excluded.sort_order,
-         active=excluded.active, when_json=excluded.when_json, updated_by=excluded.updated_by, updated_at=excluded.updated_at`,
-      ruleId, r.toolkitId, r.stage, r.track, r.order, r.active ? 1 : 0, JSON.stringify(r.when), actor.email, nowIso(),
-    );
-    await audit(this.db, actor.email, id ? 'rule.update' : 'rule.create', 'rule', ruleId, r);
-    return (await this.rules()).find((x) => x.id === ruleId)!;
-  }
-
-  async deleteRule(id: string, actor: Actor) {
-    const info = await this.db.run('DELETE FROM toolkit_rules WHERE id=?', id);
-    if (!info.changes) throw new HttpError(404, 'Rule not found.', 'not_found');
-    await audit(this.db, actor.email, 'rule.delete', 'rule', id);
   }
 
   /** Reads a stored PDF (admin preview / signed download). */

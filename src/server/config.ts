@@ -41,6 +41,10 @@ const Env = z.object({
   MAIL_WEBHOOK_TOKEN: z.string().optional(),
   STAGING_BASIC_AUTH: z.string().regex(/^[^:\s]+:.{12,}$/, 'Use user:password with a 12+ character password').optional(),
   WHATSAPP_NUMBER: z.string().regex(/^\d{8,15}$/).default('60122202217'),
+  /** First name used in the prefilled WhatsApp greeting ("Hi Balla, ..."). */
+  ADVISOR_NAME: z.string().trim().min(1).max(40).regex(/^[\p{L} .'-]+$/u).default('Balla'),
+  /** Lifetime of the staff-only report link a prospect sends over WhatsApp. */
+  HANDOVER_TTL_HOURS: z.coerce.number().int().min(1).max(168).default(48),
 });
 
 export interface Config {
@@ -76,6 +80,8 @@ export interface Config {
   mailWebhookUrl?: string;
   mailWebhookToken?: string;
   whatsappNumber: string;
+  advisorName: string;
+  handoverTtlHours: number;
   /** user:password. When set, the whole site (except /api/health) sits behind HTTP Basic auth — for staging. */
   stagingBasicAuth?: string;
 }
@@ -142,6 +148,8 @@ export function loadConfig(overrides: Record<string, string | undefined> = {}, s
     mailWebhookUrl: e.MAIL_WEBHOOK_URL,
     mailWebhookToken: e.MAIL_WEBHOOK_TOKEN,
     whatsappNumber: e.WHATSAPP_NUMBER,
+    advisorName: e.ADVISOR_NAME,
+    handoverTtlHours: e.HANDOVER_TTL_HOURS,
     stagingBasicAuth: e.STAGING_BASIC_AUTH,
   };
 }

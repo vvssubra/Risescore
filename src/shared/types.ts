@@ -1,11 +1,6 @@
 export type Track = 'financial' | 'career';
 export type PillarKey = 'R' | 'I' | 'S' | 'E';
-export type ModuleKey =
-  | 'financial_investing'
-  | 'financial_business'
-  | 'career_industry'
-  | 'career_switch'
-  | 'career_business';
+export type ModuleKey = 'financial_investing' | 'career_industry' | 'career_switch';
 
 export type AlertId =
   | 'cash_crisis'
@@ -14,12 +9,25 @@ export type AlertId =
   | 'dependent_cover'
   | 'investing_essential'
   | 'concentration'
-  | 'business_feasibility'
   | 'career_arrears'
-  | 'switch_runway'
-  | 'sales_authorisation'
-  | 'unit_trust_age'
-  | 'weak_business_model';
+  | 'switch_runway';
+
+/** The eight V4.3 toolkits. A report may unlock at most two of them. */
+export type ToolkitId = 'TK01' | 'TK02' | 'TK03' | 'TK04' | 'TK05' | 'TK06' | 'TK07' | 'TK08';
+
+export type PriorityKind = 'flag' | 'score' | 'maintain';
+
+/** One of at most two evidence-based next steps, each tied to exactly one toolkit. */
+export interface Priority {
+  number: number;
+  pillar: PillarKey;
+  pillarName: string;
+  title: string;
+  reason: string;
+  toolkit: ToolkitId;
+  kind: PriorityKind;
+  actions: string[];
+}
 
 export interface Option {
   key: string;
@@ -90,6 +98,8 @@ export interface AssessmentResult {
   plan: PlanView;
   steps: string[];
   reasons: { question: string; response: string; score: number }[];
+  /** One or two priorities. Empty only when too few answers were given to identify any. */
+  priorities: Priority[];
   modules: { module: ModuleKey; answered: number; total: number }[];
   unknown: string[];
   disclaimer: string;

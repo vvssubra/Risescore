@@ -26,6 +26,7 @@ export interface PublicConfig {
 export interface Notice { title: string; intro: string; sections: { heading: string; body: string[] }[] }
 export interface Legal { version: string; status: string; notice: Record<Locale, Notice>; consent: Record<'processing' | 'marketing', Record<Locale, string>> }
 export type ReportView = FullReport;
+export interface HandoverView { url: string; expiresAt: string; message: string; whatsappUrl: string }
 
 export const api = {
   config: () => call<PublicConfig>('GET', '/api/config'),
@@ -37,5 +38,7 @@ export const api = {
   verify: (token: string) => call<{ reportToken: string; reportPath: string }>('POST', '/api/reports/verify', { token }),
   report: (token: string) => call<ReportView>('GET', `/api/reports/${encodeURIComponent(token)}`),
   erase: (token: string) => call<void>('DELETE', `/api/reports/${encodeURIComponent(token)}`),
+  createHandover: (token: string) => call<HandoverView>('POST', `/api/reports/${encodeURIComponent(token)}/handover`),
+  revokeHandover: (token: string) => call<void>('DELETE', `/api/reports/${encodeURIComponent(token)}/handover`),
   setMarketing: (token: string, optIn: boolean) => call<{ marketingOptIn: boolean }>('POST', `/api/reports/${encodeURIComponent(token)}/marketing`, { optIn }),
 };

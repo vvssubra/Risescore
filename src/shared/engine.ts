@@ -1,19 +1,21 @@
 /**
- * R.I.S.E.™ diagnostic engine — TypeScript port of the verified v2.0 engine.
+ * R.I.S.E.™ diagnostic engine — TypeScript port of the V4.3 engine (reference/v4.3/engine.js),
+ * with V4.3's two-priority selection (./priorities.ts) applied to every result.
  *
- * Scoring rules, weights, thresholds, tie-breaks, applicability and critical-alert overrides are
- * unchanged and are locked by differential tests against the verbatim v2.0 source
- * (tests/reference/engine.v2.cjs).
+ * V4.3 changes vs v2.0: career questions are filtered by role/goal before scoring (activeCore),
+ * insurance and savings use separate yes/no, type (multi-select) and review questions, business and
+ * preschool modules are retired, and a result needs >= 70% weight across at least three scored pillars.
  *
- * One deliberate hardening vs. the prototype: only answers to questions that are ACTIVE for the
- * profile are considered. In the prototype a stale answer to a conditional module question
- * (left over after the user went back and changed their profile) could still trigger an alert.
+ * Hardening vs. the prototype: only answers to questions that are ACTIVE (and visible) for the
+ * profile are considered, so a stale answer left over after the user changed their profile or a
+ * parent answer can never raise an alert.
  *
  * This module is pure (no I/O) so the same code runs in the browser for UX hints and on the
  * server, where it is the only source of truth for results.
  */
 import { GUARD_TEXT, PLANS } from './content.ts';
-import { MODULES, QUESTIONS, SCORECARD_VERSION } from './questions.ts';
+import { enrich } from './priorities.ts';
+import { EXCLUSIVE_KEYS, MODULES, MULTI_SELECT_IDS, QUESTIONS, SCORECARD_VERSION } from './questions.ts';
 import type {
   AlertId,
   AlertItem,
@@ -50,23 +52,56 @@ export function tier(score: number): string {
         : 'Strong foundation';
 }
 
-export function modulesFor(profile: Profile): ModuleKey[] {
+const considersSwitch = (p: Partial<Profile>) => p.goal === 'career_change' || p.switchIntent === 'yes' || p.switchIntent === 'maybe';
+
+/** Team/leadership questions only apply to business owners or people who chose the leadership goal. */
+export function showLeadership(profile: Partial<Profile>): boolean {
+  return profile.track === 'career' && (profile.role === 'business_owner' || profile.goal === 'leadership');
+}
+
+/** Core questions that apply to this profile. Scores normalise only across these. */
+export function activeCore(profile: Pick<Profile, 'track'> & Partial<Profile>): Question[] {
+  return QUESTIONS[profile.track].filter((q) => {
+    if (profile.track !== 'career') return true;
+    if (q.id === 'c_r4' && !considersSwitch(profile)) return false;
+    if (q.id === 'c_s4' && !showLeadership(profile)) return false;
+    if (q.pillar === 'E' && !showLeadership(profile)) return false;
+    return true;
+  });
+}
+
+export function modulesFor(profile: Partial<Profile>): ModuleKey[] {
   const result: ModuleKey[] = [];
   if (profile.track === 'financial') {
-    if (['investing', 'property'].includes(profile.goal) || profile.role === 'property_agent') result.push('financial_investing');
-    if (['preschool', 'business'].includes(profile.goal) || profile.role === 'business_owner') result.push('financial_business');
+    if (['investing', 'property'].includes(profile.goal ?? '')) result.push('financial_investing');
   } else if (profile.track === 'career') {
-    if (['insurance_agent', 'property_agent'].includes(profile.role) || profile.goal === 'unit_trust') result.push('career_industry');
-    if (profile.goal === 'career_change' || profile.switchIntent === 'yes') result.push('career_switch');
-    if (profile.role === 'business_owner' || profile.goal === 'preschool' || profile.goal === 'business') result.push('career_business');
+    if (profile.goal === 'unit_trust') result.push('career_industry');
+    if (considersSwitch(profile)) result.push('career_switch');
   }
   return result;
 }
 
 export function questionsFor(profile: Pick<Profile, 'track'> & Partial<Profile>): Question[] {
   if (!profile || !QUESTIONS[profile.track]) throw new EngineError('Select a valid scorecard.');
-  return [...QUESTIONS[profile.track], ...modulesFor(profile as Profile).flatMap((m) => MODULES[m])];
+  return [...activeCore(profile), ...modulesFor(profile).flatMap((m) => MODULES[m])];
 }
+
+/**
+ * Follow-up questions hidden by an earlier answer: insurance type/review when there is no (known)
+ * insurance, and savings location when there are no (known) savings.
+ */
+export function isHidden(questionId: string, answers: Answers): boolean {
+  if (questionId === 'f_savings_place') return ['none', 'unsure'].includes(answers.f_has_savings ?? '');
+  if (questionId === 'f_policy_types' || questionId === 'f_policy_review') return ['none', 'unknown'].includes(answers.f_r4 ?? '');
+  return false;
+}
+
+/** The questions a person actually sees, in order, given their current answers. */
+export function visibleQuestions(profile: Profile, answers: Answers): Question[] {
+  return questionsFor(profile).filter((q) => !isHidden(q.id, answers));
+}
+
+export const isMultiSelect = (id: string) => MULTI_SELECT_IDS.includes(id);
 
 type AnswerState =
   | { state: 'unknown'; score: null; option?: undefined }
@@ -74,7 +109,14 @@ type AnswerState =
   | { state: 'scored'; score: number; option: Question['options'][number] };
 
 function getAnswer(q: Question, value: string | undefined | null): AnswerState {
-  if (value === undefined || value === null || value === SKIP) return { state: 'unknown', score: null };
+  if (value === undefined || value === null || value === SKIP || value === '') return { state: 'unknown', score: null };
+  const keys = value.split('|');
+  if (keys.length > 1) {
+    // Multi-select answers are descriptive only and never scored.
+    if (!isMultiSelect(q.id)) throw new EngineError(`Multiple answers not allowed for ${q.id}`);
+    if (keys.some((k) => !q.options.some((o) => o.key === k) || EXCLUSIVE_KEYS.includes(k))) throw new EngineError(`Invalid multi-select ${q.id}`);
+    return { state: 'unknown', score: null };
+  }
   const found = q.options.find((x) => x.key === value);
   if (!found) throw new EngineError(`Invalid answer ${q.id}: ${value}`);
   if (found.key === 'na') return { state: 'na', score: null, option: found };
@@ -94,23 +136,26 @@ export function alertsFor(p: Profile, a: Answers): AlertItem[] {
     add(is(a.f_r1, 'overdue'), 'cash_crisis');
     add(is(a.f_r3, 'missed'), 'debt_arrears');
     add(oneOf(a.f_r2, ['none', 'under_one']) && oneOf(a.f_i1, ['irregular', 'none']), 'fragile_buffer');
-    add(p.dependants === 'yes' && oneOf(a.f_r4, ['gap', 'none', 'unsure']), 'dependent_cover');
-    add(oneOf(a.f_m_investliquidity, ['essential']) || oneOf(a.f_b_capital, ['essential', 'borrow']), 'investing_essential');
+    // Only a stated "no insurance" counts; an unreviewed or unknown policy is not "uninsured".
+    add(p.dependants === 'yes' && is(a.f_r4, 'none'), 'dependent_cover');
+    add(is(a.f_m_investliquidity, 'essential'), 'investing_essential');
     add(is(a.f_m_property, 'dominates') && (oneOf(a.f_s3, ['limited', 'illiquid']) || oneOf(a.f_m_investliquidity, ['reduced', 'strained'])), 'concentration');
-    add(oneOf(a.f_b_feasibility, ['idea', 'none']), 'business_feasibility');
   } else {
     add(is(a.c_r2, 'overdue'), 'career_arrears');
     add((p.switchIntent === 'yes' || p.goal === 'career_change') && oneOf(a.c_r1, ['one_two', 'under_one', 'none']) && a.c_m_switch !== 'gradual', 'switch_runway');
-    add(oneOf(a.c_m_authorisation, ['preparing', 'none']) && (p.goal === 'unit_trust' || oneOf(p.role, ['insurance_agent', 'property_agent'])), 'sales_authorisation');
-    add(p.goal === 'unit_trust' && p.ageBand === '18_20', 'unit_trust_age');
-    add(is(a.c_m_unit, 'unclear'), 'weak_business_model');
   }
   return alerts.sort(
     (x, y) => y.severity - x.severity || PILLAR_ORDER.join('').indexOf(x.pillar) - PILLAR_ORDER.join('').indexOf(y.pillar) || x.id.localeCompare(y.id),
   );
 }
 
-/** Throws EngineError on unknown question ids or option keys. Used at the API boundary. */
+const MAX_ANSWER_LENGTH = 120;
+
+/**
+ * Throws EngineError on unknown/inactive question ids, unknown option keys, invalid multi-selects
+ * (duplicates, exclusive choices combined) and follow-up answers that contradict their parent answer.
+ * Used at the API boundary.
+ */
 export function validateAnswers(profile: Profile, answers: unknown): Answers {
   if (!answers || typeof answers !== 'object' || Array.isArray(answers)) throw new EngineError('Answers must be an object.');
   const active = new Map(questionsFor(profile).map((q) => [q.id, q]));
@@ -118,21 +163,28 @@ export function validateAnswers(profile: Profile, answers: unknown): Answers {
   for (const [id, value] of Object.entries(answers as Record<string, unknown>)) {
     const q = active.get(id);
     if (!q) throw new EngineError(`Unknown or inactive question: ${id}`);
-    if (typeof value !== 'string') throw new EngineError(`Invalid answer for ${id}`);
-    if (value !== SKIP && !q.options.some((o) => o.key === value)) throw new EngineError(`Invalid answer ${id}: ${value}`);
+    if (typeof value !== 'string' || value.length > MAX_ANSWER_LENGTH) throw new EngineError(`Invalid answer for ${id}`);
+    if (value !== SKIP) {
+      const keys = value.split('|');
+      if (keys.length > 1 && !isMultiSelect(id)) throw new EngineError(`Only one answer allowed for ${id}`);
+      if (keys.length !== new Set(keys).size || keys.some((k) => !q.options.some((o) => o.key === k))) throw new EngineError(`Invalid answer ${id}: ${value}`);
+      if (keys.length > 1 && keys.some((k) => EXCLUSIVE_KEYS.includes(k))) throw new EngineError(`Exclusive answer cannot be combined: ${id}`);
+    }
     clean[id] = value;
   }
+  if (clean.f_r4 === 'yes' && clean.f_policy_types === 'none') throw new EngineError('Please correct the insurance types selected.');
+  for (const id of Object.keys(clean)) if (isHidden(id, clean)) throw new EngineError(`Answer for ${id} does not match the earlier answer.`);
   return clean;
 }
 
 export function assess(profile: Profile, answers?: Answers): AssessmentResult {
   if (!profile || !WEIGHTS[profile.track]) throw new EngineError('Invalid track');
-  const active = questionsFor(profile);
-  const activeIds = new Set(active.map((q) => q.id));
+  const activeIds = new Set(questionsFor(profile).map((q) => q.id));
+  const raw = answers ?? {};
   const a: Answers = {};
-  for (const [k, v] of Object.entries(answers ?? {})) if (activeIds.has(k)) a[k] = v;
+  for (const [k, v] of Object.entries(raw)) if (activeIds.has(k) && !isHidden(k, raw)) a[k] = v;
 
-  const base = QUESTIONS[profile.track];
+  const base = activeCore(profile);
   const stats = {} as Record<PillarKey, PillarStat>;
   let scoreTotal = 0;
   let totalWeight = 0;
@@ -176,15 +228,17 @@ export function assess(profile: Profile, answers?: Answers): AssessmentResult {
   }
 
   const confidence = fullEligible ? Math.round((fullAnswered / fullEligible) * 100) : 0;
-  const complete = totalWeight >= 0.999 && confidence >= 70;
-  const overall = complete ? Math.round(scoreTotal) : null;
+  const scoredPillars = Object.values(stats).filter((x) => x.score !== null).length;
+  // Career profiles without leadership questions have three pillars, so overall is normalised by the weight actually scored.
+  const complete = totalWeight >= 0.7 && confidence >= 70 && scoredPillars >= 3;
+  const overall = complete ? Math.round(scoreTotal / totalWeight) : null;
   const alerts = alertsFor(profile, a);
   const scored = Object.entries(stats).filter(([, v]) => v.score !== null) as [PillarKey, PillarStat][];
   const weak = scored.sort((x, y) => (x[1].score as number) - (y[1].score as number) || 'RISE'.indexOf(x[0]) - 'RISE'.indexOf(y[0]));
   const concern = alerts.find((x) => x.severity >= 2);
   const allStrong = complete && !concern && Object.values(stats).every((v) => v.score !== null && v.score >= 80);
   const matchedGoal = (
-    { investing: 'S', property: 'S', income: 'I', unit_trust: 'I', career_change: 'I', business: 'E', preschool: 'E', leadership: 'E', legacy: 'E', security: 'R' } as Record<string, PillarKey>
+    { investing: 'S', property: 'S', income: 'I', unit_trust: 'I', career_change: 'I', business: 'I', leadership: 'E', legacy: 'E', security: 'R' } as Record<string, PillarKey>
   )[profile.goal];
   const priority: PillarKey = concern ? concern.pillar : allStrong ? matchedGoal || 'E' : weak[0] ? weak[0][0] : 'R';
   const basePlan = PLANS[profile.track][priority];
@@ -208,7 +262,7 @@ export function assess(profile: Profile, answers?: Answers): AssessmentResult {
     };
   });
 
-  return {
+  const scoredResult: AssessmentResult = {
     version: SCORECARD_VERSION,
     track: profile.track,
     overall,
@@ -239,15 +293,17 @@ export function assess(profile: Profile, answers?: Answers): AssessmentResult {
         : allStrong
           ? [
               'Maintain the habits and safeguards that support your strongest pillars.',
-              'Recheck goals, assumptions and important documents at least annually.',
+              'Recheck your goals and insurance, bank and family records at least once a year.',
               'Choose one development priority that fits your present needs.',
             ]
           : plan.steps,
     reasons,
+    priorities: [],
     modules: moduleResults,
     unknown,
     disclaimer: DISCLAIMER,
   };
+  return enrich(scoredResult, profile, a);
 }
 
 /** Deterministic answer sets used by tests: best scored option, worst scored option, or everything skipped. */
@@ -255,7 +311,8 @@ export function templateAnswers(profile: Profile, key: 'high' | 'low' | 'skip'):
   const all: Answers = {};
   for (const q of questionsFor(profile)) {
     const opts = q.options.filter((o) => typeof o.score === 'number');
-    if (key === 'high') all[q.id] = opts.slice().sort((x, y) => (y.score as number) - (x.score as number))[0].key;
+    if (!opts.length) all[q.id] = SKIP;
+    else if (key === 'high') all[q.id] = opts.slice().sort((x, y) => (y.score as number) - (x.score as number))[0].key;
     else if (key === 'low') all[q.id] = opts.slice().sort((x, y) => (x.score as number) - (y.score as number))[0].key;
     else all[q.id] = SKIP;
   }

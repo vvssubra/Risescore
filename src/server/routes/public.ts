@@ -32,11 +32,9 @@ export function publicRoutes(ctx: Context): Router {
   });
 
   r.get('/legal', (_req, res) => {
-    const params = { assessmentDays: ctx.cfg.assessmentRetentionDays, reportDays: ctx.cfg.reportRetentionDays };
+    const params = { assessmentDays: ctx.cfg.assessmentRetentionDays, reportDays: ctx.cfg.reportRetentionDays, handoverHours: ctx.cfg.handoverTtlHours };
     res.json({ version: PRIVACY_NOTICE_VERSION, status: PRIVACY_NOTICE_STATUS, notice: { en: privacyNotice('en', params), ms: privacyNotice('ms', params) }, consent: CONSENT_TEXT });
   });
-
-  r.get('/toolkits', async (_req, res) => res.json({ toolkits: await ctx.toolkits.publicLibrary() }));
 
   r.post('/assessments', limit(L, 'assess', 40, 3_600_000, ip), async (req, res) => {
     const { profile, answers } = req.body ?? {};
@@ -76,6 +74,10 @@ export function publicRoutes(ctx: Context): Router {
     if (typeof req.body?.optIn !== 'boolean') throw new HttpError(400, 'optIn must be true or false.', 'invalid');
     return ctx.reports.setMarketing(t, req.body.optIn);
   }));
+
+  // V4.4 staff handover: created only when the prospect taps WhatsApp; the link needs a staff login to open.
+  r.post('/reports/:token/handover', limit(L, 'handover', 10, 3_600_000, ip), withToken((t) => ctx.handovers.create(t), 201));
+  r.delete('/reports/:token/handover', limit(L, 'handover-revoke', 20, 3_600_000, ip), withToken(async (t) => { await ctx.handovers.revoke(t); }));
 
   /** Signed, short-lived download. Only the currently published, unexpired version of an active toolkit can be fetched. */
   r.get('/files/:id', limit(L, 'file', 120, 60_000, ip), async (req, res) => {

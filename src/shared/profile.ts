@@ -29,23 +29,21 @@ export const DEPENDANTS: Choice[] = [
 ];
 
 export const FIN_GOALS: Choice[] = [
-  ['security', 'Financial stability and security'],
-  ['income', 'Improve household income'],
-  ['investing', 'Investing and diversification'],
-  ['property', 'Property and liquidity'],
-  ['business', 'Business ownership or expansion'],
-  ['preschool', 'Education / preschool investment'],
-  ['legacy', 'Financial independence and legacy'],
+  ['security', 'Feel more secure about money'],
+  ['income', 'Earn more money or build a second income'],
+  ['investing', 'Grow my savings, investments or property'],
+  ['business', 'Explore starting or growing a business'],
+  ['legacy', 'Prepare for retirement and my family'],
 ];
 
 export const CAREER_GOALS: Choice[] = [
-  ['income', 'Grow current earning power'],
+  ['income', 'Earn more money or build another income'],
   ['career_change', 'Explore a different career'],
-  ['unit_trust', 'Unit trust / PRS professional pathway'],
-  ['business', 'Build or expand a business'],
-  ['preschool', 'Education / preschool business'],
-  ['leadership', 'Build a high-performing team'],
-  ['security', 'Stabilise my current income'],
+  ['financial_career', 'Explore a career in financial services'],
+  ['unit_trust', 'Explore unit trust / PRS as a career'],
+  ['business', 'Start or grow my own business'],
+  ['leadership', 'Become a better team leader'],
+  ['security', 'Make my income more reliable'],
 ];
 
 export const SWITCH_INTENT: Choice[] = [
@@ -75,7 +73,7 @@ export const PROFILE_STEPS: Record<Exclude<keyof Profile, 'track'>, Omit<Profile
   },
   goal: {
     title: 'What would you most like to improve?',
-    help: 'Select the topic most relevant to you today. Your actual results can point to another priority.',
+    help: 'What matters most to you right now? We will also check whether another area needs attention.',
   },
   switchIntent: {
     title: 'Are you considering a move to variable or commission-based earnings?',

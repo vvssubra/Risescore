@@ -75,7 +75,6 @@ export function adminRoutes(ctx: Context): Router {
 
   // ---- toolkit library ----
   r.get('/toolkits', need(...ALL), async (_req, res) => res.json({ toolkits: await ctx.toolkits.listAdmin(), launchNote: 'Built-in worksheets need a compliance review before public launch.' }));
-  r.post('/toolkits', need(...ALL), async (req, res) => res.status(201).json(await ctx.toolkits.create(req.body, actor(res))));
   r.patch('/toolkits/:tid', need(...ALL), async (req, res) => {
     const a = actor(res);
     // Editors may edit details; only reviewers/admins may activate or deactivate (changes what the public sees).
@@ -107,11 +106,11 @@ export function adminRoutes(ctx: Context): Router {
     res.end(data);
   });
 
-  // ---- matching rules ----
-  r.get('/rules', need(...ALL), async (_req, res) => res.json({ rules: await ctx.toolkits.rules() }));
-  r.post('/rules', need('admin'), async (req, res) => res.status(201).json(await ctx.toolkits.upsertRule(null, req.body, actor(res))));
-  r.put('/rules/:rid', need('admin'), async (req, res) => res.json(await ctx.toolkits.upsertRule(String(req.params.rid), req.body, actor(res))));
-  r.delete('/rules/:rid', need('admin'), async (req, res) => { await ctx.toolkits.deleteRule(String(req.params.rid), actor(res)); res.status(204).end(); });
+  // ---- report handover (link sent by a prospect over WhatsApp) ----
+  r.get('/handover/:token', need(...ALL), limit(ctx.limiter, 'handover-open', 60, 3_600_000, ip), async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(await ctx.handovers.open(String(req.params.token), actor(res)));
+  });
 
   // ---- users ----
   r.get('/users', need('admin'), async (_req, res) => res.json({ users: await ctx.auth.listUsers() }));

@@ -1,9 +1,11 @@
 /**
  * In-browser stand-in for the server API, used only by the demo build. It runs the SAME engine, question bank,
- * toolkit templates + default matching rules and legal text as the real app, so results are real. Nothing leaves the page.
+ * two-priority logic, V4.3 planners and legal text as the real app, so results are real. Nothing leaves the page.
+ * (The demo bundles all eight planners because it is a local, offline design artefact — never host it publicly.)
  */
-import { DEFAULT_RULES, matchToolkitIds } from '../src/shared/toolkit-rules.ts';
-import { TOOLKIT_TEMPLATES } from '../src/shared/toolkit-templates.ts';
+import { entitledToolkits } from '../src/shared/priorities.ts';
+import { SCORECARD_VERSION } from '../src/shared/questions.ts';
+import { WORKBOOKS } from '../src/server/workbooks.ts';
 import { CONSENT_TEXT, MARKETING_NOTICE_VERSION, PRIVACY_NOTICE_STATUS, PRIVACY_NOTICE_VERSION, privacyNotice } from '../src/shared/legal.ts';
 import { EngineError, assess, validateAnswers } from '../src/shared/engine.ts';
 import { validateProfile } from '../src/shared/profile.ts';
@@ -30,10 +32,10 @@ function preview(r: AssessmentResult) {
 
 export const api = {
   async config() {
-    return { scorecardVersion: '2.0', privacyNoticeVersion: PRIVACY_NOTICE_VERSION, marketingNoticeVersion: MARKETING_NOTICE_VERSION, privacyNoticeStatus: PRIVACY_NOTICE_STATUS, reportAccessMode: 'immediate' as const, whatsappNumber: '60122202217', reportTtlDays: 30 };
+    return { scorecardVersion: SCORECARD_VERSION, privacyNoticeVersion: PRIVACY_NOTICE_VERSION, marketingNoticeVersion: MARKETING_NOTICE_VERSION, privacyNoticeStatus: PRIVACY_NOTICE_STATUS, reportAccessMode: 'immediate' as const, whatsappNumber: '60122202217', reportTtlDays: 30 };
   },
   async legal() {
-    const p = { assessmentDays: 90, reportDays: 365 };
+    const p = { assessmentDays: 90, reportDays: 365, handoverHours: 48 };
     return { version: PRIVACY_NOTICE_VERSION, status: PRIVACY_NOTICE_STATUS, notice: { en: privacyNotice('en', p), ms: privacyNotice('ms', p) }, consent: CONSENT_TEXT };
   },
   async createAssessment(profile: Profile, answers: Answers) {
@@ -67,14 +69,20 @@ export const api = {
     const a = r && assessments.get(r.id);
     if (!r || !a) throw new ApiError(404, 'report_not_found', 'Report not found.');
     const result = assess(a.profile, a.answers);
-    const toolkits = matchToolkitIds(result, a.profile, DEFAULT_RULES)
-      .map((id) => TOOLKIT_TEMPLATES.find((t) => t.id === id)!)
-      .map((t) => ({ id: t.id, title: t.title, sub: t.sub, minutes: t.minutes, track: t.track as string, pillar: t.pillar as string, sections: t.sections, pdf: null }));
+    const toolkits = entitledToolkits(result)
+      .map((id) => WORKBOOKS.find((w) => w.id === id)!)
+      .map((w) => ({ id: w.id, title: w.title, sub: w.subtitle, minutes: w.minutes, track: w.track as string, pillar: w.pillar as string, workbook: w, pdf: null }));
     return {
       generatedAt: new Date().toISOString(), expiresAt: r.expires, firstName: r.firstName, profile: { track: a.profile.track, goal: a.profile.goal },
       result, toolkits, consent: { marketingOptIn: r.marketing }, whatsapp: { number: '60122202217' },
     };
   },
+  async createHandover(_token: string) {
+    await wait(300);
+    const message = 'Demo only — in the live app this message contains your name, score, priority titles and a private staff-only link.';
+    return { url: '#', expiresAt: new Date(Date.now() + 2 * DAY).toISOString(), message, whatsappUrl: `https://wa.me/60122202217?text=${encodeURIComponent(message)}` };
+  },
+  async revokeHandover(_token: string) { await wait(150); },
   async erase(token: string) { const r = reports.get(token); if (r) { assessments.delete(r.id); reports.delete(token); } },
   async setMarketing(token: string, optIn: boolean) { const r = reports.get(token); if (!r) throw new ApiError(404, 'report_not_found', 'Report not found.'); r.marketing = optIn; return { marketingOptIn: optIn }; },
 };

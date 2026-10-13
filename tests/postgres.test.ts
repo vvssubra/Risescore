@@ -13,13 +13,13 @@ describe(`database layer (${TEST_DB_URL ? 'real Postgres server' : 'embedded Pos
   it('reports its kind and runs on Postgres SQL', async () => {
     expect(app.ctx.db.kind).toBe(TEST_DB_URL ? 'postgres' : 'pglite');
     expect((await app.ctx.db.get<{ v: string }>('SELECT version() v'))!.v).toMatch(/PostgreSQL/);
-    expect((await app.ctx.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM toolkits'))!.n).toBe(14); // bigint comes back as a JS number
+    expect((await app.ctx.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM toolkits'))!.n).toBe(8); // bigint comes back as a JS number
   });
 
   it('migrations are idempotent', async () => {
     await migrate(app.ctx.db);
     await migrate(app.ctx.db);
-    expect((await app.ctx.db.all('SELECT version FROM schema_migrations')).length).toBe(1);
+    expect((await app.ctx.db.all('SELECT version FROM schema_migrations')).length).toBe(2);
   });
 
   it('transactions roll back completely on error', async () => {
@@ -45,7 +45,7 @@ describe(`database layer (${TEST_DB_URL ? 'real Postgres server' : 'embedded Pos
     await makeUser(app.ctx, 'admin');
     const admin = new Client(app.url);
     expect((await admin.login('admin@example.com', PW)).status).toBe(200);
-    const up = (n: number) => admin.call('PUT', '/api/admin/toolkits/financial-reset/versions', { body: minimalPdf(`% concurrent ${n}`), headers: { 'content-type': 'application/pdf', 'x-filename': `c${n}.pdf` } });
+    const up = (n: number) => admin.call('PUT', '/api/admin/toolkits/TK04/versions', { body: minimalPdf(`% concurrent ${n}`), headers: { 'content-type': 'application/pdf', 'x-filename': `c${n}.pdf` } });
     const rs = await Promise.all([1, 2, 3, 4].map(up));
     expect(rs.every((r) => r.status === 201)).toBe(true);
     expect(rs.map((r) => r.data.version).sort()).toEqual([1, 2, 3, 4]);
@@ -67,7 +67,7 @@ describe(`database layer (${TEST_DB_URL ? 'real Postgres server' : 'embedded Pos
   it('deleting a draft removes its stored file', async () => {
     const admin = new Client(app.url);
     await admin.login('admin@example.com', PW);
-    const up = await admin.call('PUT', '/api/admin/toolkits/financial-reset/versions', { body: minimalPdf('% to delete'), headers: { 'content-type': 'application/pdf' } });
+    const up = await admin.call('PUT', '/api/admin/toolkits/TK04/versions', { body: minimalPdf('% to delete'), headers: { 'content-type': 'application/pdf' } });
     const key = (await app.ctx.db.get<{ storage_key: string }>('SELECT storage_key FROM toolkit_versions WHERE id=?', up.data.id))!.storage_key;
     expect(await app.ctx.store.get(key)).not.toBeNull();
     expect((await admin.del(`/api/admin/versions/${up.data.id}`)).status).toBe(204);
@@ -108,8 +108,7 @@ describe.skipIf(!TEST_DB_URL)('real Postgres: concurrent boots', () => {
     const mk = () => createContext(loadConfig({ NODE_ENV: 'test', DATA_DIR: app.dir, DATABASE_URL: TEST_DB_URL, DATABASE_SCHEMA: schema, DATABASE_POOL_MAX: '3', PUBLIC_BASE_URL: 'http://localhost:3999' }, {}));
     const ctxs = await Promise.all([mk(), mk(), mk()]);
     try {
-      expect((await ctxs[0].db.get<{ n: number }>('SELECT COUNT(*)::int n FROM toolkits'))!.n).toBe(14);
-      expect((await ctxs[0].db.get<{ n: number }>('SELECT COUNT(*)::int n FROM toolkit_rules'))!.n).toBe(26);
+      expect((await ctxs[0].db.get<{ n: number }>('SELECT COUNT(*)::int n FROM toolkits'))!.n).toBe(8);
     } finally {
       await ctxs[0].db.exec(`DROP SCHEMA "${schema}" CASCADE`);
       await Promise.all(ctxs.map((c) => c.close()));

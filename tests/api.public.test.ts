@@ -92,10 +92,14 @@ describe('gated report', () => {
     expect(rep.data.result.alerts.length).toBeGreaterThan(0);
     expect(rep.data.result.steps).toHaveLength(3);
     expect(Object.keys(rep.data.result.byPillar)).toEqual(['R', 'I', 'S', 'E']);
-    expect(rep.data.toolkits.length).toBeGreaterThanOrEqual(1);
-    expect(rep.data.toolkits.length).toBeLessThanOrEqual(3);
-    expect(rep.data.toolkits[0].id).toBe('financial-reset');
-    expect(rep.data.toolkits[0].sections).toHaveLength(5);
+    // Only the planners named by the server-computed priorities are unlocked (max two), each with its workbook.
+    expect(rep.data.result.priorities[0]).toMatchObject({ pillar: 'R', toolkit: 'TK04', kind: 'flag' });
+    expect(rep.data.toolkits.map((k: any) => k.id)).toEqual(exp.priorities.map((x) => x.toolkit));
+    expect(rep.data.toolkits.length).toBeLessThanOrEqual(2);
+    expect(rep.data.toolkits[0].workbook.fields.length).toBeGreaterThan(3);
+    for (const other of ['TK01', 'TK02', 'TK03', 'TK05', 'TK06', 'TK07', 'TK08'].filter((id) => !exp.priorities.some((x) => x.toolkit === id))) {
+      expect(JSON.stringify(rep.data)).not.toContain(`"id":"${other}"`);
+    }
     expect(rep.data.firstName).toBe(GOOD.firstName);
     expect(rep.data.whatsapp.number).toBe('60122202217');
     expect(rep.headers.get('cache-control')).toBe('no-store');
@@ -176,12 +180,10 @@ describe('gated report', () => {
   });
 });
 
-describe('public library + legal', () => {
-  it('lists only titles of active, available toolkits — no worksheets or files', async () => {
+describe('no public library + legal', () => {
+  it('there is no browse-all toolkit endpoint', async () => {
     const r = await c.get('/api/toolkits');
-    expect(r.data.toolkits).toHaveLength(14);
-    expect(JSON.stringify(r.data)).not.toContain('"sections"');
-    expect(JSON.stringify(r.data)).not.toContain('versionId');
+    expect(r.status).toBe(404);
   });
   it('serves the bilingual privacy notice and consent wording with its version', async () => {
     const r = await c.get('/api/legal');
@@ -287,5 +289,75 @@ describe('staging password gate', () => {
       const ok = await fetch(st.url + '/api/config', { headers: { authorization: 'Basic ' + Buffer.from('tester:a-long-staging-pass').toString('base64') } });
       expect(ok.status).toBe(200);
     } finally { await st.stop(); }
+  });
+});
+
+describe('WhatsApp handover (V4.4)', () => {
+  async function report() {
+    const { data: a } = await submitAssessment(c);
+    const r = await requestReport(c, a);
+    return r.data.reportToken as string;
+  }
+  const tokenOf = (url: string) => url.split('/admin/handover/')[1];
+
+  it('creates a staff-only link and a prefilled message with name, score and priority titles only', async () => {
+    const t = await report();
+    const h = await c.post(`/api/reports/${t}/handover`, {});
+    expect(h.status).toBe(201);
+    expect(h.data.url).toMatch(/\/admin\/handover\/[A-Za-z0-9_-]{43}$/);
+    expect(h.data.message).toContain(`Name: ${GOOD.firstName}`);
+    expect(h.data.message).toContain('1. Essential payments need attention');
+    expect(h.data.message).not.toMatch(/overdue essential household|f_r1|@/);
+    expect(h.data.whatsappUrl.startsWith('https://wa.me/60122202217?text=')).toBe(true);
+    expect(decodeURIComponent(h.data.whatsappUrl.split('text=')[1])).toBe(h.data.message);
+    expect(Date.parse(h.data.expiresAt) - Date.now()).toBeGreaterThan(47 * 3_600_000);
+    expect(await app.rawDb()).not.toContain(tokenOf(h.data.url));
+  });
+
+  it('opens only for signed-in staff; anyone else gets nothing', async () => {
+    const t = await report();
+    const ht = tokenOf((await c.post(`/api/reports/${t}/handover`, {})).data.url);
+    expect((await new Client(app.url).get(`/api/admin/handover/${ht}`)).status).toBe(401);
+    const { makeUser, PW } = await import('./server-helpers.ts');
+    await makeUser(app.ctx, 'editor', 'handover.editor@example.com');
+    const staff = new Client(app.url);
+    await staff.login('handover.editor@example.com', PW);
+    const r = await staff.get(`/api/admin/handover/${ht}`);
+    expect(r.status).toBe(200);
+    expect(r.data.report.firstName).toBe(GOOD.firstName);
+    expect(r.data.report.result.priorities.length).toBeGreaterThan(0);
+    expect(r.headers.get('cache-control')).toBe('no-store');
+    expect((await staff.get(`/api/admin/handover/${'x'.repeat(43)}`)).status).toBe(404);
+    const audit = await app.ctx.db.all("SELECT * FROM audit_log WHERE action='handover.open'");
+    expect(audit.length).toBeGreaterThan(0);
+  });
+
+  it('a new link replaces the old one; withdrawing, expiry and report deletion all revoke it', async () => {
+    const { makeUser, PW } = await import('./server-helpers.ts');
+    await makeUser(app.ctx, 'reviewer', 'handover.reviewer@example.com').catch(() => undefined);
+    const staff = new Client(app.url);
+    await staff.login('handover.reviewer@example.com', PW);
+    const t = await report();
+    const first = tokenOf((await c.post(`/api/reports/${t}/handover`, {})).data.url);
+    const second = tokenOf((await c.post(`/api/reports/${t}/handover`, {})).data.url);
+    expect((await staff.get(`/api/admin/handover/${first}`)).status).toBe(404);
+    expect((await staff.get(`/api/admin/handover/${second}`)).status).toBe(200);
+    expect((await c.del(`/api/reports/${t}/handover`)).status).toBe(204);
+    expect((await staff.get(`/api/admin/handover/${second}`)).status).toBe(404);
+
+    const third = tokenOf((await c.post(`/api/reports/${t}/handover`, {})).data.url);
+    await app.ctx.db.run('UPDATE handover_links SET expires_at=?', new Date(Date.now() - 1000).toISOString());
+    expect((await staff.get(`/api/admin/handover/${third}`)).status).toBe(404);
+
+    const count = async () => (await app.ctx.db.get<{ n: number }>('SELECT COUNT(*)::int n FROM handover_links'))!.n;
+    const fourth = tokenOf((await c.post(`/api/reports/${t}/handover`, {})).data.url);
+    const withLink = await count();
+    expect((await c.del(`/api/reports/${t}`)).status).toBe(204);
+    expect((await staff.get(`/api/admin/handover/${fourth}`)).status).toBe(404);
+    expect(await count()).toBe(withLink - 1); // removed with the report (FK cascade)
+  });
+
+  it('needs a valid report token', async () => {
+    expect((await c.post(`/api/reports/${'a'.repeat(43)}/handover`, {})).status).toBe(404);
   });
 });

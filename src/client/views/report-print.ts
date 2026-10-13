@@ -89,15 +89,22 @@ function toolkits(r: ReportView, reportUrl: string) {
   <div class="pr-kit-body"><h3>${e(k.title)}</h3><p>${e(k.sub)} · ${e(k.minutes)}</p></div><a class="pr-kit-btn" href="${e(reportUrl)}">${e(t('report.kit.open'))}</a></div>`).join('');
 }
 
+function priorities(r: ReportView) {
+  const res = r.result;
+  if (!res.priorities.length) return `<ol class="pr-steps">${res.steps.map((s, i) => `<li><span class="pr-step-num" aria-hidden="true">${i + 1}</span><span>${e(s)}</span></li>`).join('')}</ol>`;
+  return res.priorities.map((p) => `<div class="pr-prio"><div class="pr-eyebrow">${e(t('report.prio.label', { n: p.number, pillar: pillarLabel(p.pillar) }))}</div><h3 class="pr-h3 pr-prio-h">${e(p.title)}</h3>
+  <p class="pr-small">${e(p.reason)}</p><ol class="pr-steps">${p.actions.map((s, i) => `<li><span class="pr-step-num" aria-hidden="true">${i + 1}</span><span>${e(s)}</span></li>`).join('')}</ol></div>`).join('');
+}
+
 function pageTwo(r: ReportView, reportUrl: string) {
   const res = r.result;
   const overall = res.complete && res.overall !== null ? `${res.overall}` : '—';
-  const dense = Math.min(res.alerts.length, 4) + r.toolkits.length >= 4;
+  const dense = Math.min(res.alerts.length, 4) + r.toolkits.length + res.priorities.length >= 5;
   return `<div class="pr-page pr-page-2${dense ? ' pr-dense' : ''}"><div class="pr-bar pr-bar-solid"><span class="pr-mark" aria-hidden="true">R</span><span class="pr-eyebrow">${e(t('report.eyebrow'))}</span>
   <span class="pr-brand">${e(r.firstName.toUpperCase())} · ${e(t('print.overall'))} <b>${overall}</b> /100</span></div>
   <div class="pr-body">
-  <section class="pr-section"><div class="pr-eyebrow">${e(t('report.s2.eyebrow'))}</div><h2 class="pr-h2">${e(t('report.s2.h3'))}</h2>
-  <ol class="pr-steps">${res.steps.map((s, i) => `<li><span class="pr-step-num" aria-hidden="true">${i + 1}</span><span>${e(s)}</span></li>`).join('')}</ol></section>
+  <section class="pr-section"><div class="pr-eyebrow">${e(t('report.s2.eyebrow'))}</div><h2 class="pr-h2">${e(res.priorities.length > 1 ? t('report.s2.h3two') : t('report.s2.h3'))}</h2>
+  ${priorities(r)}</section>
   <div class="pr-duo"><article class="pr-card"><div class="pr-eyebrow">${e(t('report.alerts.eyebrow'))}</div><h3 class="pr-h3">${e(t('report.alerts.h3'))}</h3>${attention(r)}<hr><p class="pr-small">${e(t('report.why.note'))}</p></article>
   <article class="pr-card pr-card-dark"><div class="pr-eyebrow">${e(t('report.why.eyebrow'))}</div><h3 class="pr-h3">${e(t('report.why.h3'))}</h3>${why(r)}</article></div>
   <section class="pr-section"><div class="pr-eyebrow">${e(t('report.s3.eyebrow'))}</div><h2 class="pr-h2">${e(t('report.s3.h3'))}</h2><p class="pr-lede">${e(t('report.s3.p'))}</p>

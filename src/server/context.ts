@@ -4,6 +4,7 @@ import { Mailer } from './mailer.ts';
 import { RateLimiter } from './rateLimit.ts';
 import { AssessmentService } from './services/assessments.ts';
 import { AuthService } from './services/auth.ts';
+import { HandoverService } from './services/handover.ts';
 import { ReportService } from './services/reports.ts';
 import { ToolkitService } from './services/toolkits.ts';
 import { DbObjectStore, LocalObjectStore, type ObjectStore } from './storage.ts';
@@ -18,6 +19,7 @@ export interface Context {
   toolkits: ToolkitService;
   assessments: AssessmentService;
   reports: ReportService;
+  handovers: HandoverService;
   close(): Promise<void>;
 }
 
@@ -33,5 +35,6 @@ export async function createContext(cfg: Config = loadConfig(), opts: { store?: 
   const auth = new AuthService(db, cfg);
   await auth.bootstrapAdmin(cfg.bootstrapAdmin);
   const reports = new ReportService(db, cfg, assessments, toolkits, mailer);
-  return { cfg, db, store, limiter, mailer, auth, toolkits, assessments, reports, close: async () => { limiter.stop(); await db.close(); } };
+  const handovers = new HandoverService(db, cfg, assessments, reports);
+  return { cfg, db, store, limiter, mailer, auth, toolkits, assessments, reports, handovers, close: async () => { limiter.stop(); await db.close(); } };
 }

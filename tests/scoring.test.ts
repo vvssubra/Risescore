@@ -1,253 +1,295 @@
 import { assert, describe, expect, it } from 'vitest';
-import { deepStrictEqual } from 'node:assert';
-import { MODULES, QUESTIONS } from '../src/shared/questions.ts';
-import { EngineError, SKIP, assess, alertsFor, modulesFor, questionsFor, templateAnswers, validateAnswers } from '../src/shared/engine.ts';
+import { readFileSync } from 'node:fs';
+import { MODULES, QUESTIONS, SCORECARD_VERSION } from '../src/shared/questions.ts';
+import { EngineError, SKIP, activeCore, assess, isHidden, modulesFor, questionsFor, templateAnswers, validateAnswers, visibleQuestions } from '../src/shared/engine.ts';
+import { entitledToolkits } from '../src/shared/priorities.ts';
 import { defaultProfile } from '../src/shared/profile.ts';
 import type { Answers, Profile } from '../src/shared/types.ts';
-import { mulberry32, parseCsv, randomAnswers, randomProfile, ref } from './helpers.ts';
+import { mulberry32, parseCsv, randomAnswers, randomProfile } from './helpers.ts';
 
-const fin = (over: Partial<Profile> = {}): Profile => ({ ...defaultProfile('financial'), ...over });
-const car = (over: Partial<Profile> = {}): Profile => ({ ...defaultProfile('career'), ...over });
-const high = (p: Profile): Answers => templateAnswers(p, 'high');
-const alertIds = (p: Profile, a: Answers) => assess(p, a).alerts.map((x) => x.id);
+// Ported from the V4.3 package's own suites (scoring_tests.js, v4_tests.js, v42_tests.js, cohort_tests_v43.js).
+const p = (track: 'financial' | 'career', more: Partial<Profile> = {}): Profile => ({
+  track, role: 'employee', goal: track === 'financial' ? 'security' : 'income', dependants: 'no', ageBand: '25_34', switchIntent: 'no', ...more,
+});
+const make = (profile: Profile, kind: 'high' | 'low' | 'skip' = 'high') => templateAnswers(profile, kind);
+const edit = (profile: Profile, edits: Answers, kind: 'high' | 'low' = 'high') => assess(profile, { ...make(profile, kind), ...edits });
+const ids = (r: ReturnType<typeof assess>) => r.alerts.map((a) => a.id);
 
-describe('R.I.S.E.™ scoring — 24 core cases', () => {
-  it('01 best financial answers score 100 with no alerts', () => {
-    const r = assess(fin(), high(fin()));
-    expect(r.overall).toBe(100);
-    expect(r.complete).toBe(true);
-    expect(r.alerts).toEqual([]);
-    expect(r.headline).toBe('Keep building on your strengths');
+describe('V4.3 scoring rules', () => {
+  it('financial strong baseline does not trigger false warnings', () => {
+    const z = edit(p('financial'), {});
+    expect(z.overall).toBeGreaterThanOrEqual(98);
+    expect(z.alerts).toHaveLength(0);
   });
-  it('02 best career answers score 100 with no alerts', () => {
-    const r = assess(car(), high(car()));
-    expect(r.overall).toBe(100);
-    expect(r.alerts).toEqual([]);
+  it('career high baseline is 100', () => expect(edit(p('career'), {}).overall).toBe(100));
+  it('low financial baseline triggers essential-payments crisis', () => {
+    const z = edit(p('financial'), {}, 'low');
+    expect(z.priority).toBe('R');
+    expect(ids(z)).toContain('cash_crisis');
   });
-  it('03 worst financial answers score low and raise critical alerts', () => {
-    const p = fin({ dependants: 'yes' });
-    const r = assess(p, templateAnswers(p, 'low'));
-    expect(r.overall).toBeLessThan(25);
-    expect(r.alerts.map((a) => a.id)).toEqual(expect.arrayContaining(['cash_crisis', 'debt_arrears', 'fragile_buffer', 'dependent_cover']));
-    expect(r.severity).toBe(3);
+  it('high-income strong answers cannot hide missed debt repayments', () => {
+    const z = edit(p('financial'), { f_i1: 'stable_diverse', f_i2: 'large_surplus', f_r3: 'missed' });
+    expect(ids(z)).toContain('debt_arrears');
+    expect(z.priority).toBe('R');
   });
-  it('04 everything unknown gives no score and no invented diagnosis', () => {
-    const p = fin();
-    const r = assess(p, templateAnswers(p, 'skip'));
-    expect(r.overall).toBeNull();
-    expect(r.complete).toBe(false);
-    expect(r.headline).toBe('More information is needed for a diagnostic');
-    expect(Object.values(r.byPillar).every((x) => x.score === null)).toBe(true);
-    expect(r.confidence).toBe(0);
+  it('no reserves plus unreliable income triggers buffer risk', () => expect(ids(edit(p('financial'), { f_r2: 'none', f_i1: 'irregular' }))).toContain('fragile_buffer'));
+  it('dependants and no insurance receive a protection warning; no dependants does not', () => {
+    expect(ids(edit(p('financial', { dependants: 'yes' }), { f_r4: 'none' }))).toContain('dependent_cover');
+    expect(ids(edit(p('financial', { dependants: 'no' }), { f_r4: 'none' }))).not.toContain('dependent_cover');
   });
-  it('05 empty answers behave like everything unknown', () => {
-    expect(assess(car(), {}).overall).toBeNull();
+  it('unknown or unreviewed insurance is never treated as "uninsured"', () => {
+    const pro = p('financial', { dependants: 'yes' });
+    expect(ids(edit(pro, { f_r4: 'unknown' }))).not.toContain('dependent_cover');
+    expect(ids(edit(pro, { f_r4: 'yes', f_policy_review: 'notyet' }))).not.toContain('dependent_cover');
   });
-  it('06 "unknown" is excluded, never treated as zero', () => {
-    const p = fin();
-    const a = { ...high(p), f_r1: SKIP };
-    const skipped = assess(p, a).byPillar.R.score;
-    const zero = assess(p, { ...high(p), f_r1: 'overdue' }).byPillar.R.score;
-    expect(skipped).toBe(100);
-    expect(zero).toBeLessThan(skipped as number);
+  it('essential money used for investing is a safety stop, even with a high score', () => {
+    const z = edit(p('financial', { goal: 'investing' }), { f_m_investliquidity: 'essential' });
+    expect(ids(z)).toContain('investing_essential');
+    expect(z.priority).toBe('R');
   });
-  it('07 "not applicable" removes a question from eligibility (retiree income-plan)', () => {
-    const p = fin();
-    const a = { ...high(p), f_i4: 'na', f_i1: 'stable_diverse' };
-    expect(assess(p, a).byPillar.I.score).toBe(100);
-    expect(assess(p, a).byPillar.I.eligible).toBe(4);
+  it('property concentration and illiquidity trigger Sustain', () => {
+    const z = edit(p('financial', { goal: 'investing' }), { f_m_property: 'dominates', f_s3: 'illiquid' });
+    expect(ids(z)).toContain('concentration');
+    expect(z.priority).toBe('S');
   });
-  it('08 a single answer never produces a pillar score; enough answers do', () => {
-    const p = fin();
-    const a: Answers = { ...templateAnswers(p, 'skip'), f_r1: 'comfortable' };
-    expect(assess(p, a).byPillar.R.score).toBeNull();
-    expect(assess(p, { ...a, f_r2: 'six_plus', f_r3: 'none' }).byPillar.R.score).toBe(100);
+  it('generic business interest opens no capital or preschool questionnaire', () => {
+    const pro = p('financial', { goal: 'business', role: 'business_owner' });
+    expect(modulesFor(pro)).toEqual([]);
+    expect(questionsFor(pro).some((x) => /preschool|capital for a business|occupancy/i.test(x.text))).toBe(false);
   });
-  it('09 a pillar needs at least 60% weighted coverage', () => {
-    const p = fin();
-    // R weights: 1.5 + 1.5 + 1.5 + 1 = 5.5; two answered = 3.0 = 55% < 60% => no score
-    const a: Answers = { ...templateAnswers(p, 'skip'), f_r1: 'comfortable', f_r2: 'six_plus' };
-    const r = assess(p, a);
-    expect(r.byPillar.R.coverage).toBe(55);
-    expect(r.byPillar.R.score).toBeNull();
+  it('career switch with low runway is critical; a staged change is not', () => {
+    const pro = p('career', { goal: 'career_change', switchIntent: 'yes' });
+    const z = edit(pro, { c_r1: 'under_one', c_m_switch: 'immediate' });
+    expect(ids(z)).toContain('switch_runway');
+    expect(z.severity).toBe(3);
+    expect(ids(edit(pro, { c_r1: 'under_one', c_m_switch: 'gradual' }))).not.toContain('switch_runway');
   });
-  it('10 overall needs all four pillars and >= 70% coverage', () => {
-    const p = fin();
-    const a = high(p);
-    for (const k of ['f_e1', 'f_e2', 'f_e3']) a[k] = SKIP;
-    const r = assess(p, a);
-    expect(r.byPillar.E.score).toBeNull();
-    expect(r.overall).toBeNull();
-    expect(r.complete).toBe(false);
+  it('unit-trust interest asks readiness questions but never labels an unregistered learner or an 18–20 year-old a risk', () => {
+    const pro = p('career', { role: 'insurance_agent', goal: 'unit_trust' });
+    expect(modulesFor(pro)).toContain('career_industry');
+    expect(edit(pro, { c_m_authorisation: 'none' }).alerts).toHaveLength(0);
+    const young = p('career', { goal: 'unit_trust', ageBand: '18_20' });
+    expect(edit(young, { c_m_authorisation: 'preparing' }).overall).toBe(edit({ ...young, ageBand: '21_24' }, { c_m_authorisation: 'preparing' }).overall);
   });
-  it('11 cash_crisis fires on overdue essentials (severity 3, pillar R)', () => {
-    const p = fin();
-    const r = assess(p, { ...high(p), f_r1: 'overdue' });
-    const a = r.alerts.find((x) => x.id === 'cash_crisis')!;
-    expect(a.severity).toBe(3);
-    expect(r.priority).toBe('R');
+  it('business owners get team questions; employees not seeking leadership are not scored on running an agency', () => {
+    expect(questionsFor(p('career', { role: 'business_owner', goal: 'business' })).some((q) => q.id === 'c_e2')).toBe(true);
+    const qids = questionsFor(p('career')).map((q) => q.id);
+    for (const id of ['c_s4', 'c_e1', 'c_e2', 'c_e3', 'c_r4']) expect(qids).not.toContain(id);
+    expect(edit(p('career'), {}).overall).toBe(100);
   });
-  it('12 debt_arrears fires on missed repayments', () => {
-    const p = fin();
-    expect(alertIds(p, { ...high(p), f_r3: 'missed' })).toContain('debt_arrears');
+  it('career profiles without leadership are complete on three pillars', () => {
+    const z = edit(p('career'), {});
+    expect(z.byPillar.E.score).toBeNull();
+    expect(z.complete).toBe(true);
   });
-  it('13 fragile_buffer needs low reserves AND uncertain income', () => {
-    const p = fin();
-    expect(alertIds(p, { ...high(p), f_r2: 'none' })).not.toContain('fragile_buffer');
-    expect(alertIds(p, { ...high(p), f_r2: 'none', f_i1: 'irregular' })).toContain('fragile_buffer');
+  it('multi-select insurance keeps every compatible benefit', () => {
+    const z = edit(p('financial', { dependants: 'yes' }), { f_r4: 'yes', f_policy_review: 'notyet', f_policy_types: 'medical|life|critical|accident|employer|other' });
+    expect(ids(z)).not.toContain('dependent_cover');
   });
-  it('14 dependent_cover only fires when dependants = yes', () => {
-    const a = { ...high(fin()), f_r4: 'gap' };
-    expect(alertIds(fin({ dependants: 'yes' }), a)).toContain('dependent_cover');
-    expect(alertIds(fin({ dependants: 'no' }), a)).not.toContain('dependent_cover');
-    expect(alertIds(fin({ dependants: 'unsure' }), a)).not.toContain('dependent_cover');
+  it('an exclusive choice cannot be combined, and single questions take one answer', () => {
+    expect(() => assess(p('financial'), { ...make(p('financial')), f_policy_types: 'medical|unsure' })).toThrow(EngineError);
+    expect(() => assess(p('financial'), { ...make(p('financial')), f_r1: 'comfortable|usually' })).toThrow(EngineError);
   });
-  it('15 investing_essential fires from either module (investing liquidity or business capital)', () => {
-    const inv = fin({ goal: 'investing' });
-    expect(alertIds(inv, { ...high(inv), f_m_investliquidity: 'essential' })).toContain('investing_essential');
-    const biz = fin({ goal: 'business' });
-    expect(alertIds(biz, { ...high(biz), f_b_capital: 'borrow' })).toContain('investing_essential');
+  it('savings in several places are independent and unscored', () => expect(edit(p('financial'), { f_has_savings: 'sometimes', f_savings_place: 'bank|epf|other' }).overall).not.toBeNull());
+  it('"not applicable" and "unknown" are never scored as zero', () => {
+    expect(edit(p('financial'), { f_e2: 'na' }).byPillar.E.score).toBe(100);
+    const z = edit(p('financial'), { f_e2: SKIP });
+    expect(z.byPillar.E.score).toBe(100);
+    expect(z.confidence).toBeLessThan(100);
   });
-  it('16 concentration needs a dominating illiquid holding plus liquidity strain', () => {
-    const p = fin({ goal: 'property' });
-    expect(alertIds(p, { ...high(p), f_m_property: 'dominates' })).not.toContain('concentration');
-    expect(alertIds(p, { ...high(p), f_m_property: 'dominates', f_s3: 'illiquid' })).toContain('concentration');
+  it('too many missing answers suppress the combined score', () => {
+    const z = assess(p('financial'), make(p('financial'), 'skip'));
+    expect(z.overall).toBeNull();
+    expect(z.complete).toBe(false);
+    expect(z.headline).toBe('More information is needed for a diagnostic');
+    expect(z.priorities).toEqual([]);
   });
-  it('17 business_feasibility fires for idea-stage or unstarted validation', () => {
-    const p = fin({ goal: 'preschool' });
-    expect(alertIds(p, { ...high(p), f_b_feasibility: 'idea' })).toContain('business_feasibility');
+  it('age bands never change scored answers', () => {
+    expect(edit(p('financial', { ageBand: '18_20' }), {}).byPillar).toEqual(edit(p('financial', { ageBand: '65_plus' }), {}).byPillar);
   });
-  it('18 career_arrears and switch_runway (needs a transition + short runway + not staged)', () => {
-    const p = car({ goal: 'career_change' });
-    expect(alertIds(p, { ...high(p), c_r2: 'overdue' })).toContain('career_arrears');
-    expect(alertIds(p, { ...high(p), c_r1: 'under_one', c_m_switch: 'immediate' })).toContain('switch_runway');
-    expect(alertIds(p, { ...high(p), c_r1: 'under_one', c_m_switch: 'gradual' })).not.toContain('switch_runway');
+  it('invalid answers are rejected, not coerced', () => expect(() => edit(p('financial'), { f_i2: 'this_is_invalid' })).toThrow(EngineError));
+  it('version is 4.3', () => expect(edit(p('financial'), {}).version).toBe(SCORECARD_VERSION));
+});
+
+describe('two priorities and toolkit matching', () => {
+  it('healthy result gets ONE maintenance priority — never an invented second need', () => {
+    const z = edit(p('financial'), {});
+    expect(z.priorities).toHaveLength(1);
+    expect(z.priorities[0].kind).toBe('maintain');
+    expect(z.headline).toMatch(/strong/i);
+    expect(z.priorityReason).not.toMatch(/overdue|behind|danger/i);
   });
-  it('19 sales_authorisation and unit_trust_age (FIMM minimum age 21 wording preserved)', () => {
-    const p = car({ goal: 'unit_trust', ageBand: '18_20' });
-    const ids = alertIds(p, { ...high(p), c_m_authorisation: 'none' });
-    expect(ids).toEqual(expect.arrayContaining(['sales_authorisation', 'unit_trust_age']));
-    expect(alertIds(car({ goal: 'unit_trust', ageBand: '25_34' }), { ...high(car({ goal: 'unit_trust' })), c_m_authorisation: 'registered' })).toEqual([]);
+  it('career with N/A leadership: overall 100, E unscored, one priority', () => {
+    const pc = p('career');
+    const z = assess(pc, { ...make(pc), c_e1: 'na', c_e2: 'na', c_e3: 'na' });
+    expect(z.overall).toBe(100);
+    expect(z.byPillar.E.score).toBeNull();
+    expect(z.priorities).toHaveLength(1);
   });
-  it('20 weak_business_model fires when unit economics are unclear', () => {
-    const p = car({ role: 'business_owner' });
-    expect(alertIds(p, { ...high(p), c_m_unit: 'unclear' })).toContain('weak_business_model');
+  it('income first, insurance review second, for a parent with unreviewed cover', () => {
+    const pe = p('financial', { goal: 'income', dependants: 'yes' });
+    const a = { ...make(pe), f_r4: 'yes', f_policy_review: 'notyet', f_policy_types: 'medical|life', f_has_savings: 'sometimes', f_savings_place: 'bank', f_i1: 'stable_one', f_i2: 'small_surplus', f_i3: 'limited' };
+    const z = assess(pe, a);
+    expect(z.priorities.map((x) => [x.pillar, x.toolkit])).toEqual([['I', 'TK01'], ['R', 'TK02']]);
+    expect(ids(z)).not.toContain('dependent_cover');
+    const none = assess(pe, { ...a, f_r4: 'none', f_policy_review: undefined as unknown as string, f_policy_types: undefined as unknown as string });
+    expect(ids(none)).toContain('dependent_cover');
+    expect(none.priorities[0].toolkit).toBe('TK02');
   });
-  it('21 alerts sort by severity, then pillar order R-I-S-E, then id', () => {
-    const p = fin({ dependants: 'yes', goal: 'business' });
-    const a = { ...high(p), f_r1: 'overdue', f_r4: 'gap', f_b_feasibility: 'none', f_b_capital: 'essential' };
-    const sev = alertIds(p, a);
-    expect(sev.slice(0, 2)).toEqual(['cash_crisis', 'investing_essential']);
-    expect(sev.indexOf('dependent_cover')).toBeLessThan(sev.indexOf('business_feasibility'));
+  it('overdue essentials route to the debt and cash-flow reset', () => {
+    const z = edit(p('financial'), { f_r1: 'overdue' });
+    expect(z.priorities[0]).toMatchObject({ pillar: 'R', toolkit: 'TK04', kind: 'flag' });
+    expect(z.steps).toEqual(z.priorities[0].actions);
   });
-  it('22 a serious alert overrides the weakest-pillar rule and a high overall score', () => {
-    const p = fin();
-    const r = assess(p, { ...high(p), f_r1: 'overdue' });
-    expect(r.overall).toBeGreaterThan(80);
-    expect(r.priority).toBe('R');
-    expect(r.headline).toBe('Essential payments need attention');
-    expect(r.priorityReason).toContain('overdue');
+  it('never more than two priorities, never two for the same pillar or toolkit', () => {
+    const rnd = mulberry32(431);
+    for (let i = 0; i < 3000; i++) {
+      const pro = randomProfile(rnd);
+      const z = assess(pro, randomAnswers(rnd, pro));
+      expect(z.priorities.length).toBeLessThanOrEqual(2);
+      expect(new Set(z.priorities.map((x) => x.pillar)).size).toBe(z.priorities.length);
+      expect(new Set(z.priorities.map((x) => x.toolkit)).size).toBe(z.priorities.length);
+      expect(entitledToolkits(z)).toEqual(z.priorities.map((x) => x.toolkit));
+      if (z.priorities.length) expect(z.headline).toBe(z.priorities[0].title);
+    }
   });
-  it('23 conditional modules route by profile and add questions', () => {
-    expect(modulesFor(fin())).toEqual([]);
-    expect(modulesFor(fin({ goal: 'investing' }))).toEqual(['financial_investing']);
-    expect(modulesFor(fin({ role: 'business_owner', goal: 'property' }))).toEqual(['financial_investing', 'financial_business']);
-    expect(modulesFor(car({ switchIntent: 'yes', role: 'insurance_agent', goal: 'business' }))).toEqual(['career_industry', 'career_switch', 'career_business']);
-    expect(questionsFor(fin()).length).toBe(15);
-    expect(questionsFor(car({ goal: 'unit_trust' })).length).toBe(17);
-  });
-  it('24 invalid input is rejected; profile answers never change pillar scores', () => {
-    expect(() => assess(fin(), { f_r1: 'nonsense' })).toThrow(EngineError);
-    expect(() => assess({ ...fin(), track: 'x' as never }, {})).toThrow(EngineError);
-    const a = high(fin());
-    const base = assess(fin({ ageBand: '25_34', role: 'employee' }), a).byPillar;
-    const other = assess(fin({ ageBand: '65_plus', role: 'retired', dependants: 'no' }), a).byPillar;
-    expect(other).toEqual(base);
+  it('entitlements come only from server priorities and ignore anything unknown', () => {
+    expect(entitledToolkits(null)).toEqual([]);
+    expect(entitledToolkits({ priorities: [{ toolkit: 'TK99' } as never, { toolkit: 'TK03' } as never, { toolkit: 'TK05' } as never] })).toEqual(['TK03']);
   });
 });
 
-describe('API-boundary hardening', () => {
-  it('validateAnswers rejects unknown, inactive and malformed answers', () => {
-    const p = fin();
-    expect(() => validateAnswers(p, { nope: 'x' })).toThrow(/Unknown or inactive/);
-    expect(() => validateAnswers(p, { f_m_property: 'dominates' })).toThrow(/Unknown or inactive/);
-    expect(() => validateAnswers(p, { f_r1: 'zzz' })).toThrow(/Invalid answer/);
-    expect(() => validateAnswers(p, { f_r1: 5 })).toThrow(/Invalid answer/);
-    expect(() => validateAnswers(p, [])).toThrow();
-    expect(validateAnswers(p, { f_r1: 'comfortable', f_r2: SKIP })).toEqual({ f_r1: 'comfortable', f_r2: SKIP });
+describe('synthetic cohorts (V4.3 COHORT_TEST_RESULTS.json)', () => {
+  type Cohort = { scenario: string; age: string; track: 'financial' | 'career'; role: string; goal: string; questions: number; overall: number | null; coverage: number; first_pillar: string; first_topic: string; second_pillar: string; second_topic: string; alerts: string[] };
+  const expected = (JSON.parse(readFileSync(new URL('../reference/v4.3/COHORT_TEST_RESULTS.json', import.meta.url), 'utf8')) as { results: Cohort[] }).results;
+  // Answer changes and dependants per scenario, from cohort_tests_v43.js.
+  const cases: Record<string, { dependants: string; changes: Answers }> = {
+    '18–20 new worker, small savings': { dependants: 'no', changes: { f_r2: 'under_one', f_r4: 'none' } },
+    '21–24 monthly saver': { dependants: 'no', changes: { f_s1: 'consistent', f_r2: 'three_five' } },
+    '25–34 financially stretched employee': { dependants: 'no', changes: { f_i2: 'break_even', f_r2: 'one_two' } },
+    '35–44 working parent with medical and life': { dependants: 'yes', changes: { f_r4: 'yes', f_policy_types: 'medical|life|employer', f_policy_review: 'notyet', f_i1: 'stable_one', f_i2: 'small_surplus', f_i3: 'limited' } },
+    '35–44 parent with no insurance': { dependants: 'yes', changes: { f_r4: 'none' } },
+    '35–44 essential debt overdue': { dependants: 'yes', changes: { f_r1: 'overdue', f_i2: 'large_surplus' } },
+    '45–54 property investor with concentration': { dependants: 'yes', changes: { f_m_property: 'dominates', f_s3: 'illiquid' } },
+    '45–54 business owner seeks to grow': { dependants: 'yes', changes: {} },
+    '55–64 looking toward retirement': { dependants: 'yes', changes: { f_e1: 'vague' } },
+    '65+ retiree with pension': { dependants: 'no', changes: { f_i1: 'stable_one', f_i4: 'na' } },
+    '18–20 exploring first career': { dependants: 'no', changes: {} },
+    '21–24 employee interested in extra earnings': { dependants: 'no', changes: {} },
+    '25–34 employee considering change': { dependants: 'no', changes: { c_r1: 'under_one', c_m_switch: 'immediate' } },
+    '35–44 existing insurance agent wants unit trust': { dependants: 'yes', changes: { c_m_authorisation: 'preparing' } },
+    '35–44 property agent income development': { dependants: 'yes', changes: {} },
+    '45–54 experienced team leader': { dependants: 'yes', changes: { c_e2: 'partial' } },
+    '55–64 business owner considering succession': { dependants: 'yes', changes: { c_e2: 'manual' } },
+    '65+ career mentor exploring advisory role': { dependants: 'no', changes: {} },
+  };
+  it('covers all 18 published scenarios', () => expect(expected).toHaveLength(18));
+  for (const c of expected) {
+    it(c.scenario, () => {
+      const spec = cases[c.scenario];
+      assert(spec, `no answer set for ${c.scenario}`);
+      const profile: Profile = { track: c.track, ageBand: c.age, role: c.role, goal: c.goal, dependants: spec.dependants, switchIntent: c.goal === 'career_change' ? 'yes' : 'no' };
+      // The reference answers hidden follow-ups too (they are unscored); hidden ones are ignored by our engine.
+      const z = assess(profile, { ...make(profile), ...spec.changes });
+      expect(questionsFor(profile)).toHaveLength(c.questions);
+      expect(z.overall).toBe(c.overall);
+      expect(z.confidence).toBe(c.coverage);
+      expect(z.priorities[0]?.pillar ?? '').toBe(c.first_pillar);
+      expect(z.priorities[0]?.title ?? '').toBe(c.first_topic);
+      expect(z.priorities[1]?.pillar ?? '').toBe(c.second_pillar);
+      expect(z.priorities[1]?.title ?? '').toBe(c.second_topic);
+      expect(ids(z)).toEqual(c.alerts);
+    });
+  }
+});
+
+describe('follow-up visibility and API-boundary validation', () => {
+  const fin = p('financial');
+  it('insurance follow-ups are hidden unless the person has (or may have) insurance', () => {
+    expect(isHidden('f_policy_types', { f_r4: 'none' })).toBe(true);
+    expect(isHidden('f_policy_review', { f_r4: 'unknown' })).toBe(true);
+    expect(isHidden('f_policy_types', { f_r4: 'yes' })).toBe(false);
+    expect(isHidden('f_savings_place', { f_has_savings: 'none' })).toBe(true);
+    expect(visibleQuestions(fin, { f_r4: 'none', f_has_savings: 'unsure' }).map((q) => q.id)).not.toEqual(expect.arrayContaining(['f_policy_types', 'f_savings_place']));
   });
-  it('stale module answers (profile changed after answering) cannot trigger alerts — prototype bug fixed', () => {
-    const noModule = fin({ goal: 'security' });
-    const stale = { ...high(noModule), f_m_investliquidity: 'essential', f_b_feasibility: 'none' } as Answers;
-    // The verbatim prototype engine still raises alerts from answers to questions no longer asked:
-    const legacy = ref.RISE.assess(noModule, stale);
-    expect(legacy.alerts.map((a: any) => a.id)).toEqual(expect.arrayContaining(['investing_essential', 'business_feasibility']));
-    // The port ignores answers to inactive questions:
-    expect(assess(noModule, stale).alerts).toEqual([]);
-    expect(alertsFor(noModule, stale).length).toBeGreaterThan(0); // raw helper is unchanged; assess() filters
+  it('validateAnswers rejects unknown, inactive, malformed and contradictory answers', () => {
+    expect(() => validateAnswers(fin, { nope: 'x' })).toThrow(EngineError);
+    expect(() => validateAnswers(fin, { f_m_property: 'dominates' })).toThrow(/inactive/);
+    expect(() => validateAnswers(fin, { f_r1: 'zzz' })).toThrow(EngineError);
+    expect(() => validateAnswers(fin, { f_policy_types: 'medical|medical' })).toThrow(EngineError);
+    expect(() => validateAnswers(fin, { f_policy_types: 'medical|none' })).toThrow(/Exclusive/);
+    expect(() => validateAnswers(fin, { f_r4: 'yes', f_policy_types: 'none' })).toThrow(/insurance types/);
+    expect(() => validateAnswers(fin, { f_r4: 'none', f_policy_types: 'medical' })).toThrow(/earlier answer/);
+    expect(() => validateAnswers(fin, { f_has_savings: 'none', f_savings_place: 'bank' })).toThrow(/earlier answer/);
+    expect(() => validateAnswers(fin, { f_r1: 'x'.repeat(121) })).toThrow(EngineError);
+    expect(() => validateAnswers(fin, [])).toThrow(EngineError);
+    expect(validateAnswers(fin, { f_r4: 'yes', f_policy_types: 'medical|life', f_r1: SKIP })).toEqual({ f_r4: 'yes', f_policy_types: 'medical|life', f_r1: SKIP });
+  });
+  it('stale answers (profile changed after answering) cannot trigger alerts', () => {
+    const z = assess(fin, { ...make(fin), f_m_investliquidity: 'essential' });
+    expect(ids(z)).not.toContain('investing_essential');
+  });
+  it('activeCore filters career questions by role and goal before scoring', () => {
+    expect(activeCore(p('career')).map((q) => q.id)).not.toContain('c_r4');
+    expect(activeCore(p('career', { switchIntent: 'maybe' })).map((q) => q.id)).toContain('c_r4');
+    expect(activeCore(p('career', { goal: 'leadership' })).map((q) => q.id)).toEqual(expect.arrayContaining(['c_s4', 'c_e1', 'c_e2', 'c_e3']));
   });
 });
 
 describe('question bank integrity', () => {
-  it('config matches the audit CSV (reference/QUESTION_BANK.csv) exactly', () => {
-    const rows = parseCsv(new URL('../reference/QUESTION_BANK.csv', import.meta.url).pathname);
+  it('config matches the V4.3 audit CSV (reference/v4.3/QUESTION_BANK_V4_3.csv) exactly', () => {
+    const rows = parseCsv(new URL('../reference/v4.3/QUESTION_BANK_V4_3.csv', import.meta.url).pathname);
     const expected: Record<string, string>[] = [];
-    const push = (track: string, mod: string, q: (typeof QUESTIONS)['financial'][number]) => {
-      for (const o of q.options)
-        expected.push({
-          track, module: mod, pillar: q.pillar, id: q.id, weight: String(q.weight), question: q.text,
-          option_key: o.key, option_label: o.label, option_score: o.score === null ? 'N/A' : String(o.score), notes: q.tip,
-        });
+    const push = (track: string, section: string, q: (typeof QUESTIONS)['financial'][number]) => {
+      for (const o of q.options) expected.push({ track, section, question_id: q.id, pillar: q.pillar, question: q.text, plain_language_help: q.tip, weight: String(q.weight), answer_key: o.key, answer_label: o.label, score: o.score === null ? '' : String(o.score) });
     };
     for (const t of ['financial', 'career'] as const) QUESTIONS[t].forEach((q) => push(t, 'core', q));
-    const modTrack = (m: string) => (m.startsWith('financial') ? 'financial' : 'career');
-    for (const [m, qs] of Object.entries(MODULES)) qs.forEach((q) => push(modTrack(m), m, q));
-    const key = (r: Record<string, string>) => `${r.track}|${r.id}|${r.option_key}`;
-    const byKey = new Map(rows.map((r) => [key(r), r]));
-    expect(rows.length).toBe(expected.length);
+    for (const [m, qs] of Object.entries(MODULES)) qs.forEach((q) => push(m.startsWith('financial') ? 'financial' : 'career', m, q));
+    expect(rows).toHaveLength(expected.length);
+    const byKey = new Map(rows.map((r) => [`${r.track}|${r.question_id}|${r.answer_key}`, r]));
     for (const e of expected) {
-      const row = byKey.get(key(e));
-      assert(row, `CSV is missing ${key(e)}`);
-      expect({ ...row, module: row.module }).toEqual(e);
+      const row = byKey.get(`${e.track}|${e.question_id}|${e.answer_key}`);
+      assert(row, `CSV is missing ${e.question_id}/${e.answer_key}`);
+      const { multi_select: _m, conditional_note: _c, score_notes: _s, ...comparable } = row;
+      expect(comparable).toEqual(e);
     }
   });
-  it('every question has unique ids and unique option keys', () => {
+  it('unique question ids and option keys; scored options within 0..100', () => {
     const all = [...QUESTIONS.financial, ...QUESTIONS.career, ...Object.values(MODULES).flat()];
     expect(new Set(all.map((q) => q.id)).size).toBe(all.length);
-    for (const q of all) expect(new Set(q.options.map((o) => o.key)).size).toBe(q.options.length);
-    expect(all.length).toBe(41);
+    for (const q of all) {
+      expect(new Set(q.options.map((o) => o.key)).size).toBe(q.options.length);
+      for (const o of q.options) if (o.score !== null) expect(o.score).toBeGreaterThanOrEqual(0), expect(o.score).toBeLessThanOrEqual(100);
+    }
+  });
+  it('no retired preschool / business-capital questions remain', () => {
+    const text = JSON.stringify({ QUESTIONS, MODULES }).toLowerCase();
+    for (const bad of ['preschool', 'occupancy', 'f_b_', 'c_m_unit']) expect(text).not.toContain(bad);
   });
 });
 
-describe('regression vs the verified v2.0 engine', () => {
-  it('questionsFor/modulesFor match the reference for every profile combination', () => {
-    const rnd = mulberry32(7);
-    for (let i = 0; i < 2000; i++) {
-      const p = randomProfile(rnd);
-      deepStrictEqual(modulesFor(p), ref.RISE.modulesFor(p));
-      deepStrictEqual(questionsFor(p).map((q) => q.id), ref.RISE.questionsFor(p).map((q: any) => q.id));
-    }
-  });
-  it('10,000 random profile/answer combinations produce byte-identical results', () => {
-    const rnd = mulberry32(20260131);
+describe('robustness', () => {
+  it('10,000 random profile/answer combinations stay bounded and deterministic', () => {
+    const rnd = mulberry32(20261011);
     for (let i = 0; i < 10_000; i++) {
-      const p = randomProfile(rnd);
-      const a = randomAnswers(rnd, p);
-      let expected: unknown, actual: unknown;
-      try { expected = ref.RISE.assess(p, a); } catch (e) { expected = 'throws'; }
-      try { actual = assess(p, a); } catch (e) { actual = 'throws'; }
-      try { deepStrictEqual(actual, expected); } catch (err) {
-        throw new Error(`Mismatch at iteration ${i}\nprofile=${JSON.stringify(p)}\nanswers=${JSON.stringify(a)}\n${(err as Error).message.slice(0, 800)}`);
-      }
+      const pro = randomProfile(rnd);
+      const a = randomAnswers(rnd, pro);
+      const z = assess(pro, a);
+      expect(z.overall === null || (z.overall >= 0 && z.overall <= 100)).toBe(true);
+      for (const s of Object.values(z.byPillar)) expect(s.score === null || (s.score >= 0 && s.score <= 100)).toBe(true);
+      expect(assess(pro, a)).toEqual(z);
     }
   });
-  it('template answer sets (high / low / skip) match the reference', () => {
-    const rnd = mulberry32(99);
-    for (let i = 0; i < 300; i++) {
-      const p = randomProfile(rnd);
-      for (const k of ['high', 'low', 'skip'] as const) {
-        deepStrictEqual(templateAnswers(p, k), ref.RISE.templateAnswers(p, k));
-        deepStrictEqual(assess(p, templateAnswers(p, k)), ref.RISE.assess(p, ref.RISE.templateAnswers(p, k)));
+  it('every role × goal combination routes and scores', () => {
+    for (const track of ['financial', 'career'] as const) {
+      const base = defaultProfile(track);
+      for (const role of ['employee', 'insurance_agent', 'property_agent', 'business_owner', 'self_employed', 'retired', 'other']) {
+        for (const goal of ['security', 'income', 'investing', 'career_change', 'unit_trust', 'business', 'financial_career', 'leadership', 'legacy']) {
+          const pro = { ...base, role, goal };
+          const z = assess(pro, make(pro));
+          expect(z.overall).toBeGreaterThanOrEqual(98);
+          expect(z.priorities.length).toBeGreaterThanOrEqual(1);
+        }
       }
     }
   });

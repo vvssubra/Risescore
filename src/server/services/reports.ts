@@ -5,6 +5,7 @@ import { decryptField, encryptField, hmacB64u, newToken, safeEqual, sha256Hex } 
 import type { Db, Queryable, Row } from '../db.ts';
 import type { Mailer } from '../mailer.ts';
 import { assess } from '../../shared/engine.ts';
+import { SCORECARD_VERSION } from '../../shared/questions.ts';
 import { MARKETING_NOTICE_VERSION, PRIVACY_NOTICE_VERSION, type Locale } from '../../shared/legal.ts';
 import type { AssessmentResult } from '../../shared/types.ts';
 import { AssessmentService } from './assessments.ts';
@@ -147,17 +148,30 @@ export class ReportService {
 
   async getReport(token: string, ipHash: string): Promise<FullReport> {
     const { acc, req } = await this.lookup(token);
-    const row = await this.db.get('SELECT * FROM assessments WHERE id=?', req.assessment_id);
-    if (!row) throw new HttpError(404, 'Report not found.', 'report_not_found');
-    const stored = this.assessments.payload(row);
-    const result = assess(stored.profile, stored.answers); // recalculated on every read — never trusted from the client
-    const toolkits = (await this.toolkits.matchFor(result, stored.profile)).map((k) => ({
-      ...k, pdf: k.pdf ? { url: this.signFileUrl(k.pdf.versionId), filename: k.pdf.filename, sizeBytes: k.pdf.sizeBytes } : null,
-    }));
+    const report = await this.assemble(req, acc.expires_at);
     await this.db.run('UPDATE report_access SET use_count=use_count+1, last_used_at=? WHERE id=?', nowIso(), acc.id);
     await this.event(acc.id, ipHash, 'ok');
+    return report;
+  }
+
+  /** The report request behind a live prospect report token (for the staff handover). */
+  async requestForToken(token: string): Promise<Row> {
+    return (await this.lookup(token)).req;
+  }
+
+  /** Builds the full report for a ready report request. Recalculated on every read — never trusted from the client. */
+  async assemble(req: Row, expiresAt: string): Promise<FullReport> {
+    const row = await this.db.get('SELECT * FROM assessments WHERE id=?', req.assessment_id);
+    if (!row) throw new HttpError(404, 'Report not found.', 'report_not_found');
+    // Answers saved under an older question bank cannot be re-scored by the current engine.
+    if (row.scorecard_version !== SCORECARD_VERSION) throw new HttpError(410, 'This report was created with an earlier version of the scorecard. Please take the scorecard again for an up-to-date report.', 'report_outdated');
+    const stored = this.assessments.payload(row);
+    const result = assess(stored.profile, stored.answers);
+    const toolkits = (await this.toolkits.forResult(result)).map((k) => ({
+      ...k, pdf: k.pdf ? { url: this.signFileUrl(k.pdf.versionId), filename: k.pdf.filename, sizeBytes: k.pdf.sizeBytes } : null,
+    }));
     return {
-      generatedAt: nowIso(), expiresAt: acc.expires_at,
+      generatedAt: nowIso(), expiresAt,
       firstName: decryptField(this.cfg.encryptionKey, req.name_enc, 'report_requests.name'),
       profile: { track: stored.profile.track, goal: stored.profile.goal },
       result, toolkits, consent: { marketingOptIn: !!req.marketing_opt_in }, whatsapp: { number: this.cfg.whatsappNumber },
@@ -215,10 +229,11 @@ export class ReportService {
     const t = now.toISOString();
     const cutoff = (days: number) => new Date(now.getTime() - days * DAY).toISOString();
     return this.db.tx(async (tx: Queryable) => {
-      const out = { assessments: 0, reportRequests: 0, audit: 0, outbox: 0 };
+      const out = { assessments: 0, reportRequests: 0, audit: 0, handovers: 0, outbox: 0 };
       out.reportRequests = (await tx.run('DELETE FROM report_requests WHERE expires_at < ?', t)).changes;
       out.assessments = (await tx.run('DELETE FROM assessments WHERE expires_at < ?', t)).changes;
       out.audit = (await tx.run('DELETE FROM audit_log WHERE at < ?', cutoff(this.cfg.auditRetentionDays))).changes;
+      out.handovers = (await tx.run('DELETE FROM handover_links WHERE expires_at < ?', t)).changes;
       out.outbox = (await tx.run("DELETE FROM outbox WHERE (status='sent' AND sent_at < ?) OR created_at < ?", cutoff(7), cutoff(30))).changes;
       await tx.run('DELETE FROM sessions WHERE expires_at < ?', t);
       return out;

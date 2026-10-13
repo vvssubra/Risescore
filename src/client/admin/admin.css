@@ -44,3 +44,4 @@ details>summary{cursor:pointer;font-weight:700;min-height:44px;display:flex;alig
 @media(max-width:650px){main{padding:16px 12px 60px}h1{font-size:23px}.adm-bar{padding:10px 12px}}
 
 .mt8{margin:8px 0 0}.mt12{margin:12px 0 0}.w100{width:100%}.span-all{grid-column:1/-1}.align-end{align-self:end}.warn-card{border-color:#ecd5b6;background:#fffbf5}
+@media print{.adm-header,.no-print,.skip-link-nav{display:none!important}body.admin{background:#fff}#main{padding:0;max-width:none}.card{box-shadow:none;break-inside:avoid}}

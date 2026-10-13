@@ -94,7 +94,8 @@ export const minimalPdf = (extra = '') =>
 /** A scenario with a critical alert so the full report differs visibly from the preview. */
 export function alertScenario(): { profile: Profile; answers: Answers } {
   const profile = { ...defaultProfile('financial'), dependants: 'yes' } as Profile;
-  return { profile, answers: { ...templateAnswers(profile, 'high'), f_r1: 'overdue', f_r4: 'gap' } };
+  const { f_policy_types: _t, f_policy_review: _r, ...rest } = templateAnswers(profile, 'high');
+  return { profile, answers: { ...rest, f_r1: 'overdue', f_r4: 'none' } };
 }
 
 export const GOOD = { firstName: 'Aisyah', email: 'aisyah.person@example.com' };

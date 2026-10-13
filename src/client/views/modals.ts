@@ -1,4 +1,4 @@
-import type { Notice } from '../lib/api.ts';
+import type { HandoverView, Notice } from '../lib/api.ts';
 import { e } from '../lib/dom.ts';
 import { t } from '../lib/i18n.ts';
 
@@ -44,24 +44,23 @@ export function closeModal(cb?: () => void) {
   cb?.();
 }
 
-export interface WorksheetKit { id: string; title: string; sub: string; sections: [string, string][] }
-
-export function openWorksheet(kit: WorksheetKit) {
-  const html = `<div class="modal-header"><div><div class="eyebrow">${e(t('ws.eyebrow'))}</div><h2 id="wsTitle">${e(kit.title)}</h2><p class="fineprint">${e(kit.sub)}</p></div>
-  <button type="button" class="close-btn no-print" data-modal-close data-modal-focus aria-label="${e(t('ws.closeLabel'))}">×</button></div>
-  ${kit.sections.map(([step, prompt], i) => {
-    const label = t('ws.step.' + step) === 'ws.step.' + step ? step : t('ws.step.' + step);
-    return `<section class="worksheet-step"><h3>${i + 1}. ${e(label)}</h3><p id="wsp${i}">${e(prompt)}</p><textarea aria-label="${e(t('ws.noteLabel', { step: label }))}" aria-describedby="wsp${i}" placeholder="${e(t('ws.notes'))}"></textarea></section>`;
-  }).join('')}
-  <p class="fineprint">${e(t('ws.foot'))}</p>
-  <div class="modal-foot no-print"><button class="ghost-btn" data-modal-close>${e(t('ws.close'))}</button><button class="primary-btn" data-ws-print>${e(t('ws.print'))}</button></div>`;
-  const root = openModal(html, 'wsTitle');
-  root.querySelector('[data-ws-print]')?.addEventListener('click', () => {
-    document.body.classList.add('modal-printing');
-    // The background is inert while the dialog is open; lift it just for printing.
-    for (const sel of ['#app']) document.querySelector<HTMLElement>(sel)?.removeAttribute('inert');
-    window.print();
-    window.setTimeout(() => { document.body.classList.remove('modal-printing'); document.querySelector<HTMLElement>('#app')?.setAttribute('inert', ''); }, 300);
+/**
+ * V4.4 WhatsApp handover: shows exactly what will be shared before WhatsApp opens. The person sends the message
+ * themselves; the secure link only opens for signed-in staff and can be withdrawn here.
+ */
+export function openHandover(h: HandoverView, expires: string, onWithdraw: () => Promise<boolean>) {
+  const html = `<div class="modal-header"><div><div class="eyebrow">${e(t('ho.eyebrow'))}</div><h2 id="hoTitle">${e(t('ho.h2'))}</h2></div>
+  <button type="button" class="close-btn" data-modal-close aria-label="${e(t('privacy.close'))}">×</button></div>
+  <p class="fineprint">${e(t('ho.p', { date: expires }))}</p>
+  <div class="ho-preview" aria-label="${e(t('ho.previewLabel'))}">${e(h.message).replace(/\n/g, '<br>')}</div>
+  <ul class="ho-points"><li>${e(t('ho.li1'))}</li><li>${e(t('ho.li2'))}</li><li>${e(t('ho.li3'))}</li></ul>
+  <div class="modal-foot"><button type="button" class="ghost-btn" data-ho-withdraw>${e(t('ho.withdraw'))}</button>
+  <a class="whatsapp-btn" href="${e(h.whatsappUrl)}" target="_blank" rel="noopener noreferrer" data-modal-focus>${e(t('ho.open'))}</a></div>
+  <p class="fineprint" id="hoState" aria-live="polite"></p>`;
+  const root = openModal(html, 'hoTitle');
+  root.querySelector('[data-ho-withdraw]')?.addEventListener('click', async () => {
+    const ok = await onWithdraw();
+    if (ok) closeModal(); else root.querySelector('#hoState')!.textContent = t('report.privacy.fail');
   });
 }
 

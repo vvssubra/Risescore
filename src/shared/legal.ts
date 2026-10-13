@@ -7,7 +7,7 @@
  * review and the bracketed placeholders are completed. Bump PRIVACY_NOTICE_VERSION on every wording change: the
  * version a person consented to is stored with their consent record.
  */
-export const PRIVACY_NOTICE_VERSION = '2026-10-draft-1';
+export const PRIVACY_NOTICE_VERSION = '2026-10-draft-2';
 export const PRIVACY_NOTICE_STATUS: 'draft' | 'approved' = 'draft';
 export const MARKETING_NOTICE_VERSION = '2026-10-draft-1';
 
@@ -16,7 +16,7 @@ export type Locale = 'en' | 'ms';
 export interface NoticeSection { heading: string; body: string[] }
 export interface Notice { title: string; intro: string; sections: NoticeSection[] }
 
-export interface NoticeParams { assessmentDays: number; reportDays: number }
+export interface NoticeParams { assessmentDays: number; reportDays: number; handoverHours: number }
 
 export function privacyNotice(locale: Locale, p: NoticeParams): Notice {
   return locale === 'ms' ? noticeMs(p) : noticeEn(p);
@@ -36,6 +36,7 @@ function noticeEn(p: NoticeParams): Notice {
         'To calculate and show your free snapshot (no contact details are needed for this).',
         'To create your detailed report, give you a secure expiring link and email that link to you.',
         'To keep the service secure and prevent abuse.',
+        `Only if you tap the WhatsApp button in your report: to create a private link to your report that only signed-in Balla DK staff can open, valid for ${p.handoverHours} hours. You see the message (your first name, score and priority titles, plus the link) and decide whether to send it. You can withdraw the link at any time.`,
         'Only if you tick the separate optional box: to send you educational updates by email. You can withdraw this at any time.',
       ] },
       { heading: 'Is it compulsory?', body: [
@@ -77,6 +78,7 @@ function noticeMs(p: NoticeParams): Notice {
         'Untuk mengira dan memaparkan gambaran ringkas percuma anda (tiada butiran hubungan diperlukan).',
         'Untuk menyediakan laporan terperinci anda, memberi pautan selamat yang tamat tempoh, dan menghantar pautan itu melalui e-mel.',
         'Untuk memastikan perkhidmatan selamat dan mencegah penyalahgunaan.',
+        `Hanya jika anda menekan butang WhatsApp dalam laporan anda: untuk mencipta pautan peribadi ke laporan anda yang hanya boleh dibuka oleh kakitangan Balla DK yang log masuk, sah selama ${p.handoverHours} jam. Anda melihat mesej itu (nama pertama, skor dan tajuk keutamaan anda, serta pautan) dan memutuskan sama ada untuk menghantarnya. Anda boleh menarik balik pautan pada bila-bila masa.`,
         'Hanya jika anda menanda kotak pilihan yang berasingan: untuk menghantar kemas kini pendidikan melalui e-mel. Anda boleh menarik balik persetujuan ini pada bila-bila masa.',
       ] },
       { heading: 'Adakah wajib?', body: [

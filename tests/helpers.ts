@@ -1,22 +1,7 @@
-import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
 import { AGE_BANDS, CAREER_GOALS, DEPENDANTS, FIN_GOALS, ROLES, SWITCH_INTENT } from '../src/shared/profile.ts';
 import { SKIP, questionsFor } from '../src/shared/engine.ts';
 import type { Answers, Profile, Track } from '../src/shared/types.ts';
-
-const require = createRequire(import.meta.url);
-/** Verbatim v2.0 engine + v3 toolkit matcher extracted from the supplied prototype (golden reference). */
-export const ref = require('./reference/load.cjs') as {
-  RISE: {
-    assess(p: Profile, a: Answers): any;
-    questionsFor(p: Profile): any[];
-    modulesFor(p: Profile): string[];
-    templateAnswers(p: Profile, k: string): Answers;
-    QUESTIONS: any;
-    MODULES: any;
-  };
-  RISE_TOOLKITS: { CATALOG: any[]; FLAG_KITS: Record<string, string>; PRIMARY: any; match(r: any, p: any, extra?: string[]): any[] };
-};
 
 /** Small deterministic PRNG so "random" failures are reproducible. */
 export function mulberry32(seed: number) {

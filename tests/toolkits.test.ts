@@ -1,152 +1,68 @@
 import { describe, expect, it } from 'vitest';
-import { deepStrictEqual } from 'node:assert';
-import { FALLBACK_TOOLKIT_ID, TOOLKIT_TEMPLATES } from '../src/shared/toolkit-templates.ts';
-import { DEFAULT_RULES, MAX_MATCHES, matchToolkitIds, type MatchRule } from '../src/shared/toolkit-rules.ts';
-import { assess, templateAnswers } from '../src/shared/engine.ts';
-import { AGE_BANDS, CAREER_GOALS, DEPENDANTS, FIN_GOALS, ROLES, defaultProfile } from '../src/shared/profile.ts';
-import type { AlertId, Answers, Profile } from '../src/shared/types.ts';
-import { mulberry32, randomAnswers, randomProfile, ref } from './helpers.ts';
+import { existsSync } from 'node:fs';
+import { WORKBOOKS, WORKBOOK_PDF_FILES } from '../src/server/workbooks.ts';
+import { ACTIONS_BY_TOOLKIT, TOOLKIT_IDS } from '../src/shared/priorities.ts';
+import { calculate, numberOf } from '../src/shared/workbook.ts';
 
-// Reference output comes from another vm realm; normalise to host arrays before strict comparison.
-const refIds = (report: any, profile: Profile): string[] => [...ref.RISE_TOOLKITS.match(report, profile)].map((k: any) => String(k.id));
-const ourIds = (report: any, profile: Profile) => matchToolkitIds(report, profile, DEFAULT_RULES);
-
-describe('toolkit catalog', () => {
-  it('contains all 14 original templates, identical to the prototype', () => {
-    expect(TOOLKIT_TEMPLATES).toHaveLength(14);
-    const stripped = ref.RISE_TOOLKITS.CATALOG.map(({ pdfUrl, ...rest }: any) => rest);
-    deepStrictEqual(JSON.parse(JSON.stringify(TOOLKIT_TEMPLATES)), JSON.parse(JSON.stringify(stripped)));
-  });
-  it('every template follows the 5-step understand → define → consider → act → review structure', () => {
-    for (const t of TOOLKIT_TEMPLATES) expect(t.sections.map((s) => s[0])).toEqual(['Understand', 'Define', 'Consider', 'Act', 'Review']);
-  });
-  it('ids are unique and the fallback exists', () => {
-    expect(new Set(TOOLKIT_TEMPLATES.map((t) => t.id)).size).toBe(14);
-    expect(TOOLKIT_TEMPLATES.some((t) => t.id === FALLBACK_TOOLKIT_ID)).toBe(true);
+describe('V4.3 planner catalogue', () => {
+  it('has exactly TK01–TK08, each with a PDF, fields, four weeks and three options', () => {
+    expect(WORKBOOKS.map((w) => w.id)).toEqual([...TOOLKIT_IDS]);
+    for (const w of WORKBOOKS) {
+      expect(w.fields.length).toBeGreaterThanOrEqual(5);
+      expect(w.weeks).toHaveLength(4);
+      expect(w.options.length).toBeGreaterThanOrEqual(3);
+      expect(new Set(w.fields.map((f) => f.id)).size).toBe(w.fields.length);
+      for (const f of w.fields) if (f.kind === 'select') expect(f.options?.length).toBeGreaterThan(1);
+      expect(existsSync(new URL(`../reference/v4.3/pdfs/${WORKBOOK_PDF_FILES[w.id]}`, import.meta.url))).toBe(true);
+      expect(ACTIONS_BY_TOOLKIT[w.id]).toHaveLength(3);
+    }
   });
   it('educational wording never promises returns or implies accreditation', () => {
-    const text = JSON.stringify(TOOLKIT_TEMPLATES).toLowerCase();
-    for (const bad of ['guarantee return', 'guaranteed return', 'cfp-accredited', 'cfp certified', 'risk-free', 'you will earn']) expect(text).not.toContain(bad);
+    const text = JSON.stringify(WORKBOOKS).toLowerCase();
+    for (const bad of ['we guarantee', 'returns are guaranteed', 'cfp-accredited', 'risk-free', 'you will earn']) expect(text).not.toContain(bad);
+    // "guaranteed returns" may appear only inside a warning against such promises.
+    for (const m of text.matchAll(/guaranteed returns?/g)) expect(text.slice(Math.max(0, m.index! - 60), m.index)).toMatch(/never|promises|not/);
+  });
+  it('workbook content is server-only: no client module imports it', async () => {
+    const { readdirSync, readFileSync, statSync } = await import('node:fs');
+    const walk = (dir: string): string[] => readdirSync(dir).flatMap((f) => { const p = `${dir}/${f}`; return statSync(p).isDirectory() ? walk(p) : [p]; });
+    const root = new URL('../src/client', import.meta.url).pathname;
+    for (const file of walk(root)) expect(readFileSync(file, 'utf8')).not.toMatch(/server\/workbooks/);
   });
 });
 
-/** One scenario per critical-alert id, each expected to route to its mapped toolkit. */
-const ALERT_SCENARIOS: Record<AlertId, { profile: Partial<Profile> & { track: 'financial' | 'career' }; answers: Answers; toolkit: string }> = {
-  cash_crisis: { profile: { track: 'financial' }, answers: { f_r1: 'overdue' }, toolkit: 'financial-reset' },
-  debt_arrears: { profile: { track: 'financial' }, answers: { f_r3: 'missed' }, toolkit: 'financial-reset' },
-  fragile_buffer: { profile: { track: 'financial' }, answers: { f_r2: 'none', f_i1: 'none' }, toolkit: 'financial-reset' },
-  dependent_cover: { profile: { track: 'financial', dependants: 'yes' }, answers: { f_r4: 'gap' }, toolkit: 'family-protection' },
-  investing_essential: { profile: { track: 'financial', goal: 'investing' }, answers: { f_m_investliquidity: 'essential' }, toolkit: 'asset-liquidity' },
-  concentration: { profile: { track: 'financial', goal: 'property' }, answers: { f_m_property: 'dominates', f_s3: 'illiquid' }, toolkit: 'asset-liquidity' },
-  business_feasibility: { profile: { track: 'financial', goal: 'preschool' }, answers: { f_b_feasibility: 'none' }, toolkit: 'preschool-due-diligence' },
-  career_arrears: { profile: { track: 'career' }, answers: { c_r2: 'overdue' }, toolkit: 'career-runway' },
-  switch_runway: { profile: { track: 'career', goal: 'career_change' }, answers: { c_r1: 'none', c_m_switch: 'immediate' }, toolkit: 'career-runway' },
-  sales_authorisation: { profile: { track: 'career', goal: 'unit_trust' }, answers: { c_m_authorisation: 'none' }, toolkit: 'industry-credentials' },
-  unit_trust_age: { profile: { track: 'career', goal: 'unit_trust', ageBand: '18_20' }, answers: { c_m_authorisation: 'registered' }, toolkit: 'industry-credentials' },
-  weak_business_model: { profile: { track: 'career', role: 'business_owner' }, answers: { c_m_unit: 'unclear' }, toolkit: 'unit-economics' },
-};
-
-describe('12 alert → toolkit mappings', () => {
-  it('prototype maps exactly the 12 alerts we reproduce', () => {
-    expect(Object.keys(ref.RISE_TOOLKITS.FLAG_KITS).sort()).toEqual(Object.keys(ALERT_SCENARIOS).sort());
-    expect(DEFAULT_RULES.filter((r) => r.stage === 'alert')).toHaveLength(12);
+describe('planner calculations', () => {
+  it('empty or invalid fields are never treated as zero', () => {
+    expect(numberOf({}, 'x')).toBeNull();
+    expect(numberOf({ x: '' }, 'x')).toBeNull();
+    expect(numberOf({ x: '-5' }, 'x')).toBeNull();
+    expect(numberOf({ x: 'abc' }, 'x')).toBeNull();
+    expect(numberOf({ x: ' 12.5 ' }, 'x')).toBe(12.5);
+    for (const id of TOOLKIT_IDS) for (const line of calculate(id, {})) expect(line.result).not.toMatch(/RM 0$/);
   });
-  for (const [alert, sc] of Object.entries(ALERT_SCENARIOS)) {
-    it(`${alert} → ${sc.toolkit} (first match, severe alerts take precedence)`, () => {
-      const profile = { ...defaultProfile(sc.profile.track), ...sc.profile } as Profile;
-      const report = assess(profile, { ...templateAnswers(profile, 'high'), ...sc.answers });
-      expect(report.alerts.map((a) => a.id)).toContain(alert);
-      const ids = ourIds(report, profile);
-      expect(ids.length).toBeGreaterThanOrEqual(1);
-      expect(ids.length).toBeLessThanOrEqual(MAX_MATCHES);
-      expect(ids).toContain(sc.toolkit);
-      deepStrictEqual(ids, refIds(report, profile));
-    });
-  }
-});
-
-describe('profile routes: every eligible result matches 1–3 toolkits, identical to the prototype', () => {
-  it('covers 360+ role × goal × dependants × answer-pattern routes', () => {
-    let routes = 0;
-    for (const track of ['financial', 'career'] as const) {
-      const goals = track === 'financial' ? FIN_GOALS : CAREER_GOALS;
-      for (const [role] of ROLES) for (const [goal] of goals) for (const [dependants] of DEPENDANTS) for (const pattern of ['high', 'low', 'skip'] as const) {
-        const profile = { ...defaultProfile(track), role, goal, dependants, ageBand: role === 'retired' ? '65_plus' : '25_34' } as Profile;
-        const report = assess(profile, templateAnswers(profile, pattern));
-        const ids = ourIds(report, profile);
-        expect(ids.length, `${track}/${role}/${goal}/${dependants}/${pattern}`).toBeGreaterThanOrEqual(1);
-        expect(ids.length).toBeLessThanOrEqual(MAX_MATCHES);
-        expect(new Set(ids).size).toBe(ids.length);
-        deepStrictEqual(ids, refIds(report, profile));
-        routes++;
-      }
-    }
-    expect(routes).toBeGreaterThanOrEqual(360);
+  it('TK03 emergency savings matches the worked example (RM3,000 × 6, RM4,000 saved, RM350/month)', () => {
+    const r = calculate('TK03', { essentials: '3000', available: '4000', months: '6', monthly: '350' });
+    expect(r.map((x) => x.result)).toEqual(['RM 18,000', '1.3 months', 'RM 14,000', '40 months']);
   });
-  it('age band routes (including 18–20 unit-trust) are identical to the prototype', () => {
-    for (const [ageBand] of AGE_BANDS) {
-      const profile = { ...defaultProfile('career'), goal: 'unit_trust', ageBand } as Profile;
-      const report = assess(profile, { ...templateAnswers(profile, 'high'), c_m_authorisation: 'preparing' });
-      deepStrictEqual(ourIds(report, profile), refIds(report, profile));
-    }
+  it('TK01 second income: money kept, per hour and vs target', () => {
+    const r = calculate('TK01', { revenue: '1000', costs: '220', hours: '28', target: '500' });
+    expect(r.map((x) => x.result)).toEqual(['RM 780', 'RM 27.86', 'RM 280']);
   });
-  it('5,000 random assessments match the prototype matcher and never come back empty', () => {
-    const rnd = mulberry32(424242);
-    for (let i = 0; i < 5000; i++) {
-      const profile = randomProfile(rnd);
-      const report = assess(profile, randomAnswers(rnd, profile));
-      const ids = ourIds(report, profile);
-      expect(ids.length).toBeGreaterThanOrEqual(1);
-      deepStrictEqual(ids, refIds(report, profile));
-    }
+  it('TK04 flags a negative month and overdue essentials', () => {
+    const r = calculate('TK04', { income: '3000', essentials: '2500', debt: '600', other: '200', late: 'yes' });
+    expect(r[0]).toMatchObject({ result: 'RM -300', warn: true });
+    expect(r[1].result).toBe('20.0%');
+    expect(r[2].warn).toBe(true);
   });
-});
-
-describe('special pathways', () => {
-  it('missing data → "Complete Your Snapshot" only', () => {
-    const p = defaultProfile('financial');
-    expect(ourIds(assess(p, templateAnswers(p, 'skip')), p)).toEqual([FALLBACK_TOOLKIT_ID]);
+  it('TK07 break-even and slow month', () => {
+    const r = calculate('TK07', { price: '50', variable: '20', fixed: '3000', slow: '60', capital: '10000', setup: '6000', buffer: '5000' });
+    expect(r.map((x) => x.result)).toEqual(['RM 30', '100 per month', 'RM -1,200', 'RM -1,000']);
+    expect(r.filter((x) => x.warn)).toHaveLength(2);
   });
-  it('all strong with no alerts → annual review', () => {
-    const p = defaultProfile('career');
-    expect(ourIds(assess(p, templateAnswers(p, 'high')), p)).toContain('annual-review');
-  });
-  it('severe alerts come before the pillar default', () => {
-    const p = { ...defaultProfile('financial'), dependants: 'yes' } as Profile;
-    const r = assess(p, { ...templateAnswers(p, 'high'), f_r1: 'overdue', f_r4: 'gap' });
-    expect(ourIds(r, p).slice(0, 2)).toEqual(['financial-reset', 'family-protection']);
-  });
-});
-
-describe('admin-managed availability and rules', () => {
-  const p = defaultProfile('financial');
-  const report = assess(p, { ...templateAnswers(p, 'high'), f_r1: 'overdue' });
-  it('an unavailable (archived / unpublished) toolkit is skipped and the next rule fills the slot', () => {
-    const all = new Set(TOOLKIT_TEMPLATES.map((t) => t.id));
-    all.delete('financial-reset');
-    const ids = matchToolkitIds(report, p, DEFAULT_RULES, all);
-    expect(ids).not.toContain('financial-reset');
-    expect(ids.length).toBeGreaterThanOrEqual(1);
-  });
-  it('if nothing at all is available the safe fallback is still returned', () => {
-    expect(matchToolkitIds(report, p, DEFAULT_RULES, new Set())).toEqual([FALLBACK_TOOLKIT_ID]);
-  });
-  it('inactive rules are ignored; new admin rules are honoured', () => {
-    // An insurance agent exploring income growth: only the alert rule routes to industry-credentials.
-    const agent = { ...defaultProfile('career'), role: 'insurance_agent', goal: 'income' } as Profile;
-    const agentReport = assess(agent, { ...templateAnswers(agent, 'high'), c_m_authorisation: 'none' });
-    expect(matchToolkitIds(agentReport, agent, DEFAULT_RULES)).toContain('industry-credentials');
-    const rules: MatchRule[] = DEFAULT_RULES.map((r) => (r.id === 'default-alert-sales_authorisation' ? { ...r, active: false } : r));
-    expect(matchToolkitIds(agentReport, agent, rules)).not.toContain('industry-credentials');
-    const custom: MatchRule[] = [...DEFAULT_RULES, { id: 'x', toolkitId: 'family-continuity', stage: 'alert', track: 'financial', order: 0, active: true, when: { alert: 'cash_crisis' } }];
-    expect(matchToolkitIds(report, p, custom)[0]).toBe('family-continuity');
-  });
-  it('rules for the other track never leak across', () => {
-    const c = defaultProfile('career');
-    const r = assess(c, { ...templateAnswers(c, 'high'), c_r2: 'overdue' });
-    for (const id of matchToolkitIds(r, c, DEFAULT_RULES)) {
-      const t = TOOLKIT_TEMPLATES.find((x) => x.id === id)!;
-      expect(['career', 'both']).toContain(t.track);
-    }
+  it('TK02, TK05, TK06, TK08 produce results', () => {
+    expect(calculate('TK02', { medical: true, life: true, lifeCover: '200000' })[0].result).toBe('2 recorded');
+    expect(calculate('TK05', { largest: '80000', total: '100000', shortNeed: '20000', liquid: '5000' }).map((x) => x.result)).toEqual(['80.0%', 'RM -15,000']);
+    expect(calculate('TK06', { reserve: '12000', setup: '2000', essentials: '2500', pay: '4000', newpay: '3000' }).map((x) => x.result)).toEqual(['4.0 months', 'RM -1,000']);
+    expect(calculate('TK08', { total: '20', owner: '15', hours: '10', freed: '4' }).map((x) => x.result)).toEqual(['75.0%', '6.0 hrs/week']);
   });
 });

@@ -1,6 +1,7 @@
 import { PROFILE_STEPS, choicesFor, profileKeys } from '../../shared/profile.ts';
 import { e, icons } from '../lib/dom.ts';
 import { optLabel, qText, t } from '../lib/i18n.ts';
+import { isMulti, multiValues, visiblePosition } from '../lib/queue.ts';
 import { state } from '../lib/store.ts';
 import { pillarBars, pillarLabel, progress, scoreDial } from './shared.ts';
 
@@ -51,20 +52,29 @@ export function profileQuestion() {
   <div class="helper-label">${e(t('profile.helper'))}</div></section>`;
 }
 
+function multiOptions(items: readonly (readonly [string, string])[], selected: string[], labelledBy: string, describedBy: string) {
+  return `<fieldset class="answer-options" aria-labelledby="${labelledBy}" aria-describedby="${describedBy}"><legend class="sr-only">${e(t('q.multiHint'))}</legend>${items
+    .map(([key, label], i) => `<label class="answer-option ${selected.includes(key) ? 'chosen' : ''}"><input class="opt-multi" type="checkbox" name="multi" value="${e(key)}" ${selected.includes(key) ? 'checked' : ''} data-index="${i}"><span class="opt-num" aria-hidden="true">${i + 1}</span><span class="opt-text">${e(label)}</span><span class="option-check" aria-hidden="true">${icons.check('icon-mini')}</span></label>`)
+    .join('')}</fieldset>`;
+}
+
 export function assessmentQuestion() {
   const q = state.queue[state.questionIndex];
+  const multi = isMulti(q);
   const selected = state.answers[q.id] && state.answers[q.id] !== '__skip__' ? state.answers[q.id] : '';
   const { text, tip } = qText(q);
   const isModule = q.id.includes('_m_');
   const ctx = isModule ? t('q.followup') : pillarLabel(q.pillar).charAt(0) + pillarLabel(q.pillar).slice(1).toLowerCase();
   const items = q.options.map((o) => [o.key, optLabel(q.id, o.key, o.label)] as const);
-  const n = state.questionIndex + 1;
-  return `<section class="stage assessment-layout" aria-labelledby="qTitle">${progress(t('q.assessment'), n, state.queue.length, trackName())}
+  const { n, total } = visiblePosition();
+  const fields = multi ? multiOptions(items, multiValues(q.id), 'qTitle', 'qHelp') : options(items, selected, 'answer', 'qTitle', 'qHelp');
+  const continueLabel = state.returnToReview ? t('q.backToReview') : t('q.continue');
+  return `<section class="stage assessment-layout" aria-labelledby="qTitle">${progress(t('q.assessment'), n, total, trackName())}
   <form class="assessment-card" data-form="question" novalidate><span class="question-category">${e(ctx)} · ${isModule ? e(t('q.additional')) : `${e(t('q.pillar'))} ${q.pillar}`}</span>
   <h1 id="qTitle" tabindex="-1" data-autofocus>${e(text)}</h1><p class="question-help" id="qHelp">${e(tip || t('q.default.tip'))}</p>
-  ${options(items, selected, 'answer', 'qTitle', 'qHelp')}
-  <div class="question-bottom"><button type="button" class="back-link" data-action="previous">${e(t('q.prev'))}</button><div class="question-side"><button type="button" class="skip-link" data-action="skip">${e(t('q.notSure'))}</button><button type="submit" class="primary-btn small" data-continue ${selected ? '' : 'hidden'}>${e(t('q.continue'))}</button></div></div>${autoToggle()}</form>
-  <div class="helper-label">${e(t('q.helper', { n, total: state.queue.length }))}</div></section>`;
+  ${fields}
+  <div class="question-bottom"><button type="button" class="back-link" data-action="previous">${e(t('q.prev'))}</button><div class="question-side"><button type="button" class="skip-link" data-action="skip">${e(t('q.notSure'))}</button><button type="submit" class="primary-btn small" data-continue ${selected ? '' : 'hidden'}>${e(continueLabel)}</button></div></div>${multi ? '' : autoToggle()}</form>
+  <div class="helper-label">${e(multi ? t('q.helperMulti', { n, total }) : t('q.helper', { n, total }))}</div></section>`;
 }
 
 export function submitting() {
@@ -82,7 +92,7 @@ export function preview() {
   <div class="tag-row"><span class="pill">${e(trackName())}</span><span class="pill">${e(t('preview.coverage', { n: r.confidence }))}</span></div></div></div><div class="four-bars">${pillarBars(r.byPillar)}</div>
   ${r.complete ? '' : `<p class="fineprint mt16">${e(t('preview.notScoredNote'))}</p>`}</div>
   <div class="locked-preview"><span class="lock-icon">${icons.lock()}</span><div class="grow"><h2>${e(t('preview.lockedTitle'))}</h2><p>${e(t('preview.lockedP'))}</p></div></div>
-  <div class="preview-bottom"><button class="ghost-btn" data-action="edit-answers">${e(t('preview.review'))}</button><button class="primary-btn" data-action="gate">${e(t('preview.view'))} <span class="arrow" aria-hidden="true">↗</span></button></div>
+  <div class="preview-bottom"><button class="ghost-btn" data-action="review">${e(t('preview.review'))}</button><button class="primary-btn" data-action="gate">${e(t('preview.view'))} <span class="arrow" aria-hidden="true">↗</span></button></div>
   <p class="fineprint center mt15">${e(t('preview.note'))}</p></section>`;
 }
 

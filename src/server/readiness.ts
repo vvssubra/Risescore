@@ -12,7 +12,7 @@ export async function launchReadiness(cfg: Config, db: Db): Promise<Check[]> {
   add('prod-mode', 'NODE_ENV=production', cfg.isProd, cfg.isProd ? 'Production mode.' : `Currently "${cfg.env}".`);
   add('https', 'PUBLIC_BASE_URL uses HTTPS', cfg.publicBaseUrl.startsWith('https://'), cfg.publicBaseUrl);
 
-  const text = JSON.stringify([privacyNotice('en', { assessmentDays: 1, reportDays: 1 }), privacyNotice('ms', { assessmentDays: 1, reportDays: 1 })]);
+  const text = JSON.stringify([privacyNotice('en', { assessmentDays: 1, reportDays: 1, handoverHours: 1 }), privacyNotice('ms', { assessmentDays: 1, reportDays: 1, handoverHours: 1 })]);
   add('privacy-approved', 'Privacy notice (EN + BM) approved by counsel', PRIVACY_NOTICE_STATUS === 'approved', `Status: ${PRIVACY_NOTICE_STATUS}. Set PRIVACY_NOTICE_STATUS to 'approved' in src/shared/legal.ts after legal review.`);
   add('privacy-placeholders', 'Privacy notice has no bracketed placeholders', !/\[[^\]]+\]/.test(text), 'Complete the provider list and privacy contact details.');
 

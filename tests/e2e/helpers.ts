@@ -14,14 +14,23 @@ export { expect };
 
 export type Pick = 'first' | 'last' | number;
 
-/** Taps an option on the current question/profile screen and waits for the next screen. */
+/** Taps an option on the current question/profile screen and waits for the next screen. Multi-select questions also need Continue. */
 export async function answer(page: Page, which: Pick = 'first') {
   const before = await page.locator('h1#qTitle').textContent();
   const opts = page.locator('.answer-option');
   const n = await opts.count();
   expect(n).toBeGreaterThan(1);
+  const multi = (await page.locator('.opt-multi').count()) > 0;
   await opts.nth(which === 'first' ? 0 : which === 'last' ? n - 1 : which).click();
+  if (multi && (await page.locator('h1#qTitle').textContent()) === before) await page.locator('[data-continue]').click();
   await page.waitForFunction((prev) => { const h = document.querySelector('h1#qTitle'); return !h || h.textContent !== prev; }, before);
+}
+
+/** On the "check your answers" screen: confirm and wait for the free snapshot. */
+export async function submitReview(page: Page) {
+  await expect(page.getByRole('heading', { name: /check your answers/i })).toBeVisible();
+  await page.getByRole('button', { name: /See my results/ }).click();
+  await expect(page.getByRole('heading', { name: /snapshot is ready/i })).toBeVisible();
 }
 
 export async function notSure(page: Page) {

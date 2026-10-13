@@ -33,10 +33,10 @@ describe('staff authentication', () => {
 
   it('enforces a CSRF token on every state-changing request', async () => {
     const c = await login('admin@example.com');
-    const r = await c.call('POST', '/api/admin/toolkits', { json: { title: 'Csrf test', description: 'Should be refused', track: 'both', pillar: 'R' }, csrf: false });
+    const r = await c.call('PATCH', '/api/admin/toolkits/TK04', { json: { title: 'Csrf test' }, csrf: false });
     expect(r.status).toBe(403);
     expect(r.data.error).toBe('csrf');
-    const wrong = await c.call('POST', '/api/admin/toolkits', { json: {}, headers: { 'x-csrf-token': 'nope' }, csrf: false });
+    const wrong = await c.call('PATCH', '/api/admin/toolkits/TK04', { json: {}, headers: { 'x-csrf-token': 'nope' }, csrf: false });
     expect(wrong.status).toBe(403);
   });
 
@@ -65,28 +65,35 @@ describe('role-based access', () => {
     for (const email of ['editor@example.com', 'reviewer@example.com']) {
       const c = await login(email);
       for (const p of ['/api/admin/users', '/api/admin/leads', '/api/admin/audit', '/api/admin/launch-readiness']) expect((await c.get(p)).status).toBe(403);
-      expect((await c.post('/api/admin/rules', { toolkitId: 'financial-reset', stage: 'fallback', track: 'both', order: 0 })).status).toBe(403);
     }
   });
   it('editors cannot publish, review, archive or (de)activate', async () => {
     const e = await login('editor@example.com');
-    expect((await e.patch('/api/admin/toolkits/financial-reset', { active: false })).status).toBe(403);
-    expect((await e.post('/api/admin/toolkits/financial-reset/compliance-review', {})).status).toBe(403);
+    expect((await e.patch('/api/admin/toolkits/TK04', { active: false })).status).toBe(403);
+    expect((await e.post('/api/admin/toolkits/TK04/compliance-review', {})).status).toBe(403);
     expect((await e.post('/api/admin/versions/1/review', { decision: 'publish' })).status).toBe(403);
     expect((await e.post('/api/admin/versions/1/archive', {})).status).toBe(403);
   });
 });
 
 describe('toolkit PDF library: upload → review → publish → versioning', () => {
-  let tid = '';
-  it('an editor creates a custom toolkit that is NOT public until a reviewed PDF is published', async () => {
+  // The alert scenario (overdue essentials) unlocks TK04 Debt & Cash Flow Reset.
+  const tid = 'TK04';
+  const reportKit = async () => {
+    const pub = new Client(app.url);
+    const a = (await submitAssessment(pub)).data;
+    const t = (await requestReport(pub, a)).data.reportToken;
+    const rep = await pub.get(`/api/reports/${t}`);
+    return { pub, kit: rep.data.toolkits.find((k: any) => k.id === tid), ids: rep.data.toolkits.map((k: any) => k.id) };
+  };
+  it('the eight V4.3 planners are seeded; an assigned planner has no PDF until a reviewed one is published', async () => {
     const e = await login('editor@example.com');
-    const created = await e.post('/api/admin/toolkits', { title: 'Takaful Basics Guide', description: 'A plain-language guide to reviewing takaful coverage.', track: 'financial', pillar: 'R' });
-    expect(created.status).toBe(201);
-    tid = created.data.id;
-    expect(tid).toBe('takaful-basics-guide');
-    const lib = await new Client(app.url).get('/api/toolkits');
-    expect(lib.data.toolkits.map((t: any) => t.id)).not.toContain(tid);
+    const kits = (await e.get('/api/admin/toolkits')).data.toolkits;
+    expect(kits.filter((k: any) => k.assignable).map((k: any) => k.id)).toEqual(['TK01', 'TK02', 'TK03', 'TK04', 'TK05', 'TK06', 'TK07', 'TK08']);
+    expect((await e.post('/api/admin/toolkits', { title: 'Custom' })).status).toBe(404); // no custom toolkits: reports only unlock TK01–TK08
+    const { kit } = await reportKit();
+    expect(kit.workbook.id).toBe(tid);
+    expect(kit.pdf).toBeNull();
   });
 
   it('validates uploads: PDFs only, size limit, no active content', async () => {
@@ -118,23 +125,9 @@ describe('toolkit PDF library: upload → review → publish → versioning', ()
     expect(pub.data.version).toBe(1);
   });
 
-  it('once published the toolkit joins the public library and a rule can route to it', async () => {
-    const lib = await new Client(app.url).get('/api/toolkits');
-    const item = lib.data.toolkits.find((t: any) => t.id === tid);
-    expect(item.hasPdf).toBe(true);
-
-    const admin = await login('admin@example.com');
-    expect((await admin.post('/api/admin/rules', { toolkitId: tid, stage: 'alert', track: 'financial', order: 0, when: { alert: 'cash_crisis' } })).status).toBe(201);
-    expect((await admin.post('/api/admin/rules', { toolkitId: tid, stage: 'alert', track: 'financial', order: 0, when: {} })).status).toBe(400); // alert rule needs an alert
-    expect((await admin.post('/api/admin/rules', { toolkitId: 'does-not-exist', stage: 'fallback', track: 'both', order: 0 })).status).toBe(404);
-
-    const pub = new Client(app.url);
-    const a = (await submitAssessment(pub)).data;
-    const t = (await requestReport(pub, a)).data.reportToken;
-    const rep = await pub.get(`/api/reports/${t}`);
-    expect(rep.data.toolkits[0].id).toBe(tid); // admin rule outranks the default mapping
-    expect(rep.data.toolkits.length).toBeLessThanOrEqual(3);
-    const pdf = rep.data.toolkits[0].pdf;
+  it('once published, only reports that unlock the planner get a signed, short-lived PDF link', async () => {
+    const { pub, kit } = await reportKit();
+    const pdf = kit.pdf;
     expect(pdf.url).toMatch(/^\/api\/files\/\d+\?exp=\d+&sig=/);
 
     // signed download
@@ -167,17 +160,12 @@ describe('toolkit PDF library: upload → review → publish → versioning', ()
     expect((await new Client(app.url).get(oldUrl)).status).toBe(410);
 
     expect((await rev.post(`/api/admin/versions/${v2.id}/archive`, {})).data.status).toBe('archived');
-    expect((await new Client(app.url).get('/api/toolkits')).data.toolkits.map((t: any) => t.id)).not.toContain(tid);
   });
 
-  it('after archive, reports degrade gracefully to a safe built-in toolkit', async () => {
-    const pub = new Client(app.url);
-    const a = (await submitAssessment(pub)).data;
-    const t = (await requestReport(pub, a)).data.reportToken;
-    const ids = (await pub.get(`/api/reports/${t}`)).data.toolkits.map((k: any) => k.id);
-    expect(ids).not.toContain(tid);
-    expect(ids.length).toBeGreaterThanOrEqual(1);
-    expect(ids[0]).toBe('financial-reset');
+  it('after archive, the report keeps the interactive planner without a PDF', async () => {
+    const { kit } = await reportKit();
+    expect(kit.workbook.id).toBe(tid);
+    expect(kit.pdf).toBeNull();
   });
 
   it('a review expiry date in the past hides the PDF automatically', async () => {
@@ -186,9 +174,9 @@ describe('toolkit PDF library: upload → review → publish → versioning', ()
     const v3 = (await put(e, tid, minimalPdf('% third'), 'v3.pdf')).data;
     await e.post(`/api/admin/versions/${v3.id}/submit`, {});
     await rev.post(`/api/admin/versions/${v3.id}/review`, { decision: 'publish', reviewExpiresAt: '2999-01-01' });
-    expect((await new Client(app.url).get('/api/toolkits')).data.toolkits.map((t: any) => t.id)).toContain(tid);
+    expect((await reportKit()).kit.pdf).not.toBeNull();
     await app.ctx.db.run("UPDATE toolkit_versions SET review_expires_at='2020-01-01T00:00:00.000Z' WHERE id=?", v3.id);
-    expect((await new Client(app.url).get('/api/toolkits')).data.toolkits.map((t: any) => t.id)).not.toContain(tid);
+    expect((await reportKit()).kit.pdf).toBeNull();
     expect((await new Client(app.url).get(app.ctx.reports.signFileUrl(v3.id))).status).toBe(410);
   });
 
@@ -214,28 +202,25 @@ describe('toolkit PDF library: upload → review → publish → versioning', ()
   });
 });
 
-describe('matching rules + activation', () => {
-  it('deactivating a built-in toolkit removes it from reports; the safe fallback cannot be deactivated', async () => {
+describe('activation', () => {
+  it('deactivating a planner removes it from reports without inventing a replacement', async () => {
     const rev = await login('reviewer@example.com');
-    expect((await rev.patch('/api/admin/toolkits/complete-your-snapshot', { active: false })).data.error).toBe('fallback_required');
-    expect((await rev.patch('/api/admin/toolkits/financial-reset', { active: false })).status).toBe(200);
+    expect((await rev.patch('/api/admin/toolkits/TK04', { active: false })).status).toBe(200);
     const pub = new Client(app.url);
     const a = (await submitAssessment(pub)).data;
     const t = (await requestReport(pub, a)).data.reportToken;
-    const ids = (await pub.get(`/api/reports/${t}`)).data.toolkits.map((k: any) => k.id);
-    expect(ids).not.toContain('financial-reset');
-    expect(ids.length).toBeGreaterThanOrEqual(1);
-    await rev.patch('/api/admin/toolkits/financial-reset', { active: true });
+    const rep = (await pub.get(`/api/reports/${t}`)).data;
+    expect(rep.toolkits.map((k: any) => k.id)).not.toContain('TK04');
+    expect(rep.result.priorities[0].toolkit).toBe('TK04');
+    await rev.patch('/api/admin/toolkits/TK04', { active: true });
   });
-  it('built-in track/pillar are locked; rule CRUD works for admins', async () => {
+  it('track/pillar cannot be changed and retired pre-V4.3 worksheets cannot be re-activated', async () => {
     const admin = await login('admin@example.com');
-    expect((await admin.patch('/api/admin/toolkits/financial-reset', { track: 'career' })).data.error).toBe('builtin_locked');
-    const r = await admin.post('/api/admin/rules', { toolkitId: 'annual-review', stage: 'profile', track: 'both', order: 9, when: { roles: ['retired'] } });
-    expect(r.status).toBe(201);
-    expect((await admin.put(`/api/admin/rules/${r.data.id}`, { toolkitId: 'annual-review', stage: 'profile', track: 'both', order: 5, active: false, when: { roles: ['retired'] } })).data.active).toBe(false);
-    expect((await admin.del(`/api/admin/rules/${r.data.id}`)).status).toBe(204);
-    expect((await admin.del(`/api/admin/rules/${r.data.id}`)).status).toBe(404);
-    expect((await admin.get('/api/admin/rules')).data.rules.filter((x: any) => x.id.startsWith('default-')).length).toBeGreaterThan(20);
+    expect((await admin.patch('/api/admin/toolkits/TK04', { track: 'career' })).status).toBe(400);
+    const now = new Date().toISOString();
+    await app.ctx.db.run("INSERT INTO toolkits (id,title,description,track,pillar,minutes,builtin,active,created_at,updated_at) VALUES ('financial-reset','30-Day Financial Reset','Retired worksheet','financial','R','15 min',1,0,?,?)", now, now);
+    expect((await admin.patch('/api/admin/toolkits/financial-reset', { active: true })).data.error).toBe('retired');
+    expect((await admin.patch('/api/admin/toolkits/TK04', { title: 'Debt and Cash Flow Reset' })).data.title).toBe('Debt and Cash Flow Reset');
   });
 });
 
@@ -255,7 +240,7 @@ describe('leads (personal data)', () => {
     expect(csv).not.toContain('optout@example.com');
     expect(csv).toContain(`"'=HYPERLINK`);
     const actions = (await admin.get('/api/admin/audit')).data.entries.map((x: any) => x.action);
-    expect(actions).toEqual(expect.arrayContaining(['leads.view', 'leads.export_marketing', 'toolkit.create', 'version.publish']));
+    expect(actions).toEqual(expect.arrayContaining(['leads.view', 'leads.export_marketing', 'toolkit.update', 'version.publish']));
   });
 });
 
@@ -266,7 +251,7 @@ describe('launch readiness', () => {
     const failing = checks.filter((c) => !c.ok && c.blocking).map((c) => c.id);
     expect(failing).toEqual(expect.arrayContaining(['privacy-approved', 'privacy-placeholders', 'toolkits-reviewed', 'mail', 'prod-mode', 'https']));
     // toolkit compliance sign-off flows through
-    for (const t of (await admin.get('/api/admin/toolkits')).data.toolkits.filter((t: any) => t.builtin)) await admin.post(`/api/admin/toolkits/${t.id}/compliance-review`, {});
+    for (const t of (await admin.get('/api/admin/toolkits')).data.toolkits.filter((t: any) => t.builtin && t.active)) await admin.post(`/api/admin/toolkits/${t.id}/compliance-review`, {});
     const after = (await admin.get('/api/admin/launch-readiness')).data.checks.find((c: any) => c.id === 'toolkits-reviewed');
     expect(after.ok).toBe(true);
   });

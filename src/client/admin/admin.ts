@@ -5,7 +5,7 @@ import '@fontsource/dm-sans/latin-600.css';
 import '@fontsource/dm-sans/latin-700.css';
 import './admin.css';
 
-import { CAREER_GOALS, FIN_GOALS, ROLES } from '../../shared/profile.ts';
+import type { FullReport } from '../../server/services/reports.ts';
 
 const $ = <T extends HTMLElement>(s: string) => document.querySelector<T>(s)!;
 const e = (x: unknown) => String(x ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] as string);
@@ -17,7 +17,9 @@ let user: User | null = null;
 let csrf = '';
 let tab = 'toolkits';
 let toolkits: any[] = [];
-let rules: any[] = [];
+/** Report handover link a prospect sent over WhatsApp (/admin/handover/<token>). Opened after sign-in. */
+const handoverToken = location.pathname.match(/^\/admin\/handover\/([A-Za-z0-9_-]{20,100})$/)?.[1] ?? null;
+if (handoverToken) tab = 'handover';
 /** Version panels the user has expanded; kept across re-renders so actions don't collapse their workspace. */
 const openKits = new Set<string>();
 
@@ -56,7 +58,7 @@ function ask(title: string, fields: string, submit = 'Confirm'): Promise<Record<
 // ---------- shell ----------
 function chrome() {
   $('#who').innerHTML = user ? `<span>${e(user.name)} · <strong>${e(user.role)}</strong></span><button class="btn sm" id="pwBtn">Change password</button><button class="btn sm" id="outBtn">Sign out</button>` : '';
-  const tabs = [['toolkits', 'Toolkit library'], ['rules', 'Matching rules']];
+  const tabs = [...(handoverToken ? [['handover', 'Shared report']] : []), ['toolkits', 'Toolkit library']];
   if (user?.role === 'admin') tabs.push(['leads', 'Leads'], ['users', 'Staff'], ['audit', 'Audit log'], ['launch', 'Launch readiness']);
   $('#nav').innerHTML = user ? tabs.map(([k, l]) => `<button data-tab="${k}" ${tab === k ? 'aria-current="page"' : ''}>${l}</button>`).join('') : '';
   $('#pwBtn')?.addEventListener('click', changePassword);
@@ -79,7 +81,7 @@ function loginView() {
     ev.preventDefault();
     try {
       const r = await api('POST', '/auth/login', { email: ($('#em') as HTMLInputElement).value, password: ($('#pw') as HTMLInputElement).value });
-      user = r.user; csrf = r.csrfToken; tab = 'toolkits'; await show();
+      user = r.user; csrf = r.csrfToken; tab = handoverToken ? 'handover' : 'toolkits'; await show();
       if (user?.mustChangePassword) await changePassword();
     } catch (err) { $('#lerr').innerHTML = `<div class="err">${e((err as Error).message)}</div>`; }
   });
@@ -89,8 +91,8 @@ async function show() {
   chrome();
   main.innerHTML = '<p class="muted">Loading…</p>';
   try {
-    if (tab === 'toolkits') await toolkitsView();
-    else if (tab === 'rules') await rulesView();
+    if (tab === 'handover') await handoverView();
+    else if (tab === 'toolkits') await toolkitsView();
     else if (tab === 'leads') await leadsView();
     else if (tab === 'users') await usersView();
     else if (tab === 'audit') await auditView();
@@ -108,21 +110,10 @@ const canReview = () => user?.role === 'admin' || user?.role === 'reviewer';
 // ---------- toolkits ----------
 async function toolkitsView() {
   toolkits = (await api('GET', '/toolkits')).toolkits;
-  const unreviewed = toolkits.filter((t) => t.builtin && !t.compliance_reviewed_at).length;
-  main.innerHTML = `<h1>Toolkit library</h1><p class="lead">Upload PDFs, send them for review, publish and version them. Nothing reaches the public until a different person approves it. Built-in interactive worksheets always remain as the safe fallback.</p>
-  ${unreviewed ? `<div class="card warn-card"><strong>${unreviewed} built-in worksheet(s) still need a compliance review</strong> before public launch (Malaysian regulatory wording, no product recommendations or return claims).</div>` : ''}
-  <details class="card"><summary>Add a new toolkit</summary><form id="newKit" class="grid mt12">
-   <div><label for="nt">Title</label><input id="nt" name="title" required minlength="3" maxlength="120"></div>
-   <div class="span-all"><label for="nd">Short description</label><input id="nd" name="description" required minlength="10" maxlength="300"></div>
-   <div><label for="ntr">Assessment</label><select id="ntr" name="track"><option value="financial">Financial</option><option value="career">Career & Income</option><option value="both">Both</option></select></div>
-   <div><label for="np">Pillar</label><select id="np" name="pillar"><option value="R">R · Restore</option><option value="I">I · Income</option><option value="S">S · Sustain</option><option value="E">E · Empire</option></select></div>
-   <div><label for="nm">Time</label><input id="nm" name="minutes" value="15 min"></div>
-   <div class="align-end"><button class="btn primary">Create toolkit</button></div></form></details>
+  const unreviewed = toolkits.filter((t) => t.assignable && !t.compliance_reviewed_at).length;
+  main.innerHTML = `<h1>Toolkit library</h1><p class="lead">The eight V4.3 planners (TK01–TK08). A report unlocks at most two of them, chosen by its priorities — there is no public library. Upload each planner's fillable PDF, send it for review and publish it; nothing reaches the public until a different person approves it. The original PDFs are in <code>reference/v4.3/pdfs</code>.</p>
+  ${unreviewed ? `<div class="card warn-card"><strong>${unreviewed} planner(s) still need a compliance review</strong> before public launch (Malaysian regulatory wording, no product recommendations or return claims).</div>` : ''}
   ${toolkits.map(kitCard).join('')}`;
-  $('#newKit').addEventListener('submit', async (ev) => {
-    ev.preventDefault();
-    try { await api('POST', '/toolkits', Object.fromEntries(new FormData(ev.target as HTMLFormElement))); toast('Toolkit created. Upload a PDF to publish it.'); await show(); } catch (err) { fail(err); }
-  });
   main.querySelectorAll<HTMLDetailsElement>('details[data-kit]').forEach((d) => d.addEventListener('toggle', () => { if (d.open) openKits.add(d.dataset.kit!); else openKits.delete(d.dataset.kit!); }));
   main.querySelectorAll<HTMLElement>('[data-act]').forEach((b) => b.addEventListener('click', () => onKitAction(b)));
   main.querySelectorAll<HTMLInputElement>('input[data-upload]').forEach((i) => i.addEventListener('change', () => onUpload(i)));
@@ -131,11 +122,11 @@ async function toolkitsView() {
 function kitCard(t: any) {
   const cur = t.currentPdf;
   return `<article class="card"><div class="row"><div><h2>${e(t.title)}</h2><div class="small muted">${e(t.id)} · ${e(t.track)} · pillar ${e(t.pillar)} · ${e(t.minutes)}</div></div>
-  <div class="actions">${canReview() ? `<button class="btn sm" data-act="${t.active ? 'deactivate' : 'activate'}" data-id="${e(t.id)}">${t.active ? 'Deactivate' : 'Activate'}</button>` : ''}</div></div>
+  <div class="actions">${canReview() && (t.assignable || t.active) ? `<button class="btn sm" data-act="${t.active ? 'deactivate' : 'activate'}" data-id="${e(t.id)}">${t.active ? 'Deactivate' : 'Activate'}</button>` : ''}</div></div>
   <p class="small mt8">${e(t.description)}</p>
-  <div>${t.builtin ? '<span class="chip gold">built-in worksheet</span>' : '<span class="chip">custom (PDF only)</span>'}<span class="chip ${t.active ? 'ok' : 'bad'}">${t.active ? 'active' : 'inactive'}</span>
+  <div>${t.assignable ? '<span class="chip gold">V4.3 planner</span>' : '<span class="chip">retired (pre-V4.3)</span>'}<span class="chip ${t.active ? 'ok' : 'bad'}">${t.active ? 'active' : 'inactive'}</span>
   ${cur ? `<span class="chip ok">PDF v${cur.version} live${cur.review_expires_at ? ' until ' + e(fmt(cur.review_expires_at)) : ''}</span>` : '<span class="chip">no PDF live</span>'}
-  ${t.builtin ? (t.compliance_reviewed_at ? `<span class="chip ok">compliance reviewed ${e(fmt(t.compliance_reviewed_at))}</span>` : '<span class="chip warn">compliance review pending</span>') : ''}</div>
+  ${t.assignable ? (t.compliance_reviewed_at ? `<span class="chip ok">compliance reviewed ${e(fmt(t.compliance_reviewed_at))}</span>` : '<span class="chip warn">compliance review pending</span>') : ''}</div>
   <details class="mt8" data-kit="${e(t.id)}" ${openKits.has(t.id) ? 'open' : ''}><summary>Versions (${t.versions.length}) &amp; upload</summary>
    <div class="tablewrap"><table><thead><tr><th>Ver</th><th>File</th><th>Status</th><th>Uploaded</th><th>Review</th><th></th></tr></thead><tbody>
    ${t.versions.map((v: any) => `<tr><td>v${v.version}</td><td>${e(v.filename)}<div class="muted small">${size(v.size_bytes)} · sha256 ${e(v.sha256.slice(0, 10))}…</div></td><td>${statusChip(v.status)}</td><td>${e(fmt(v.created_at))}</td>
@@ -147,7 +138,7 @@ function kitCard(t: any) {
    ${['draft', 'rejected'].includes(v.status) ? `<button class="btn sm danger" data-act="delvers" data-vid="${v.id}">Delete</button>` : ''}</div></td></tr>`).join('') || '<tr><td colspan="6" class="muted">No PDFs uploaded yet.</td></tr>'}
    </tbody></table></div>
    <div class="mt12"><label for="up-${e(t.id)}">Upload a new PDF version (max 15 MB, no scripts or embedded files)</label><input id="up-${e(t.id)}" type="file" accept="application/pdf" data-upload="${e(t.id)}"></div>
-   ${t.builtin && canReview() ? `<p class="mt12"><button class="btn sm" data-act="compliance" data-id="${e(t.id)}">Mark worksheet content as compliance-reviewed</button></p>` : ''}
+   ${t.assignable && canReview() ? `<p class="mt12"><button class="btn sm" data-act="compliance" data-id="${e(t.id)}">Mark worksheet content as compliance-reviewed</button></p>` : ''}
   </details></article>`;
 }
 
@@ -180,65 +171,34 @@ async function onKitAction(b: HTMLElement) {
   } catch (err) { fail(err); }
 }
 
-// ---------- rules ----------
-const STAGE_HELP: Record<string, string> = {
-  fallback: 'Used when answers are too incomplete to score. Always keep one.',
-  alert: 'Shown first when a specific critical alert fires (severe alerts take precedence).',
-  primary: 'Default toolkit for the priority pillar, or the annual review when everything is strong.',
-  profile: 'Extra specialist toolkit chosen by goal, role or dependants. Max 3 toolkits are shown overall.',
-};
-const ALERTS = ['cash_crisis', 'debt_arrears', 'fragile_buffer', 'dependent_cover', 'investing_essential', 'concentration', 'business_feasibility', 'career_arrears', 'switch_runway', 'sales_authorisation', 'unit_trust_age', 'weak_business_model'];
-const condText = (w: any) => [w.alert && `alert = ${w.alert}`, w.priority && `priority = ${w.priority}`, w.allStrong && 'all pillars strong, no alerts', w.goals && `goal ∈ ${w.goals.join(', ')}`, w.roles && `role ∈ ${w.roles.join(', ')}`, w.dependants && `dependants = ${w.dependants}`].filter(Boolean).join(' · ') || 'always';
+// ---------- shared report (V4.4 handover) ----------
+const PILLAR: Record<string, string> = { R: 'Restore', I: 'Income', S: 'Sustain', E: 'Empire' };
 
-async function rulesView() {
-  [rules, toolkits] = await Promise.all([api('GET', '/rules').then((r) => r.rules), api('GET', '/toolkits').then((r) => r.toolkits)]);
-  const rank: Record<string, number> = { fallback: 0, alert: 1, primary: 2, profile: 3 };
-  rules.sort((a, b) => rank[a.stage] - rank[b.stage] || a.order - b.order);
-  const title = (id: string) => toolkits.find((t) => t.id === id)?.title ?? id;
-  const admin = user?.role === 'admin';
-  main.innerHTML = `<h1>Matching rules</h1><p class="lead">Decide which toolkit appears for which result — no code changes needed. Rules run in this order: fallback → alert → primary → profile; the first three available toolkits are shown.</p>
-  ${admin ? '<p><button class="btn primary" id="addRule">Add rule</button></p>' : '<p class="muted">Only admins can change rules.</p>'}
-  <div class="card tablewrap"><table><thead><tr><th>Stage</th><th>Track</th><th>When</th><th>Toolkit</th><th>Order</th><th>Active</th>${admin ? '<th></th>' : ''}</tr></thead><tbody>
-  ${rules.map((r) => `<tr><td><strong>${e(r.stage)}</strong><div class="muted small">${e(STAGE_HELP[r.stage])}</div></td><td>${e(r.track)}</td><td class="small">${e(condText(r.when))}</td><td>${e(title(r.toolkitId))}</td><td>${r.order}</td><td>${r.active ? '<span class="chip ok">on</span>' : '<span class="chip bad">off</span>'}</td>
-  ${admin ? `<td><div class="actions"><button class="btn sm" data-r="edit" data-id="${e(r.id)}">Edit</button><button class="btn sm danger" data-r="del" data-id="${e(r.id)}">Delete</button></div></td>` : ''}</tr>`).join('')}</tbody></table></div>`;
-  $('#addRule')?.addEventListener('click', () => editRule());
-  main.querySelectorAll<HTMLElement>('[data-r]').forEach((b) => b.addEventListener('click', async () => {
-    const r = rules.find((x) => x.id === b.dataset.id);
-    if (b.dataset.r === 'edit') editRule(r);
-    else if (confirm('Delete this rule?')) { try { await api('DELETE', `/rules/${r.id}`); await show(); } catch (err) { fail(err); } }
-  }));
-}
-
-async function editRule(r?: any) {
-  const w = r?.when ?? {};
-  const opts = (arr: [string, string][], sel: string[] = []) => arr.map(([k, l]) => `<option value="${e(k)}" ${sel.includes(k) ? 'selected' : ''}>${e(l)}</option>`).join('');
-  const v = await ask(r ? 'Edit rule' : 'Add rule', `
-   <div><label for="rs">Stage</label><select id="rs" name="stage">${opts(Object.keys(STAGE_HELP).map((k) => [k, k]), [r?.stage ?? 'alert'])}</select></div>
-   <div><label for="rt">Track</label><select id="rt" name="track">${opts([['financial', 'financial'], ['career', 'career'], ['both', 'both']], [r?.track ?? 'financial'])}</select></div>
-   <div><label for="rk">Toolkit</label><select id="rk" name="toolkitId">${opts(toolkits.map((t) => [t.id, t.title]), [r?.toolkitId ?? ''])}</select></div>
-   <div><label for="ro">Order (lower first)</label><input id="ro" name="order" type="number" min="0" max="1000" value="${r?.order ?? 10}"></div>
-   <div><label for="ra">When alert fires (alert stage)</label><select id="ra" name="alert"><option value="">—</option>${opts(ALERTS.map((a) => [a, a]), [w.alert ?? ''])}</select></div>
-   <div><label for="rp">When priority pillar is</label><select id="rp" name="priority"><option value="">—</option>${opts([['R', 'R'], ['I', 'I'], ['S', 'S'], ['E', 'E']], [w.priority ?? ''])}</select></div>
-   <div class="check"><input id="rsg" type="checkbox" name="allStrong" ${w.allStrong ? 'checked' : ''}><label for="rsg">All pillars strong and no alerts (annual review)</label></div>
-   <div><label for="rg">Goals (any of; hold Ctrl/Cmd)</label><select id="rg" name="goals" multiple size="5">${opts([...new Map([...FIN_GOALS, ...CAREER_GOALS].map((g) => [g[0], g])).values()].map((g) => [g[0], g[1]]), w.goals ?? [])}</select></div>
-   <div><label for="rr">Roles (any of)</label><select id="rr" name="roles" multiple size="4">${opts(ROLES.map((x) => [x[0], x[1]]), w.roles ?? [])}</select></div>
-   <div><label for="rd">Dependants</label><select id="rd" name="dependants"><option value="">—</option>${opts([['yes', 'yes'], ['no', 'no'], ['unsure', 'unsure']], [w.dependants ?? ''])}</select></div>
-   <div class="check"><input id="rac" type="checkbox" name="active" ${(r?.active ?? true) ? 'checked' : ''}><label for="rac">Active</label></div>`, 'Save rule');
-  if (!v) return;
-  const dlg = $('#dlg') as HTMLDialogElement;
-  const sel = (id: string) => [...(dlg.querySelector<HTMLSelectElement>(`#${id}`)?.selectedOptions ?? [])].map((o) => o.value);
-  const when: Record<string, unknown> = {};
-  if (v.alert) when.alert = v.alert;
-  if (v.priority) when.priority = v.priority;
-  if (v.allStrong) when.allStrong = true;
-  if (sel('rg').length) when.goals = sel('rg');
-  if (sel('rr').length) when.roles = sel('rr');
-  if (v.dependants) when.dependants = v.dependants;
-  try {
-    const body = { toolkitId: v.toolkitId, stage: v.stage, track: v.track, order: Number(v.order), active: !!v.active, when };
-    if (r) await api('PUT', `/rules/${r.id}`, body); else await api('POST', '/rules', body);
-    toast('Rule saved.'); await show();
-  } catch (err) { fail(err); }
+async function handoverView() {
+  let data: { report: FullReport; handoverExpiresAt: string };
+  try { data = await api('GET', `/handover/${encodeURIComponent(handoverToken!)}`); }
+  catch (err) {
+    if (err instanceof Err && err.status === 401) throw err;
+    main.innerHTML = `<h1>Shared report</h1><div class="err" role="alert">${e((err as Error).message)}</div>`;
+    return;
+  }
+  const { report: r, handoverExpiresAt } = data;
+  const res = r.result;
+  const track = res.track === 'financial' ? 'Financial' : 'Career & Income';
+  const pillars = (['R', 'I', 'S', 'E'] as const).map((k) => { const p = res.byPillar[k]; return `<tr><th>${k} · ${PILLAR[k]}</th><td>${p.score === null ? 'Not enough data' : p.score + '/100'}</td><td class="small muted">${e(p.level)} · ${p.coverage}% coverage</td></tr>`; }).join('');
+  const prios = res.priorities.map((p) => `<article class="card"><div class="small muted">PRIORITY ${p.number} · ${e(PILLAR[p.pillar])} · ${e(p.toolkit)}</div><h3>${e(p.title)}</h3><p>${e(p.reason)}</p><ol>${p.actions.map((a) => `<li>${e(a)}</li>`).join('')}</ol></article>`).join('') || '<p class="muted">No priorities could be identified from the answers given.</p>';
+  const alerts = res.alerts.map((a) => `<li><strong>${e(a.title)}</strong> — ${e(a.reason)}</li>`).join('') || '<li class="muted">No predefined critical-condition flags.</li>';
+  const why = res.reasons.map((x) => `<li>${e(x.question)} <strong>${e(x.response)}</strong></li>`).join('') || '<li class="muted">Not enough detail.</li>';
+  const kits = r.toolkits.map((k) => `<li>${e(k.id)} · ${e(k.title)}${k.pdf ? ` — <a href="${e(k.pdf.url)}" target="_blank" rel="noopener noreferrer">PDF</a>` : ''}</li>`).join('') || '<li class="muted">None</li>';
+  main.innerHTML = `<div class="row no-print"><p class="small muted">Shared by the prospect over WhatsApp · link valid until ${e(fmt(handoverExpiresAt))} · this view is recorded in the audit log.</p><button class="btn primary" id="hoPrint">Print / save as PDF</button></div>
+  <h1>${e(r.firstName)} · R.I.S.E.™ ${track} Scorecard</h1>
+  <p class="lead">Overall score: <strong>${res.complete && res.overall !== null ? res.overall + '/100' : 'withheld — not enough information'}</strong> · ${res.confidence}% of scoring questions answered · version ${e(res.version)} · goal: ${e(r.profile.goal)}</p>
+  <div class="card tablewrap"><table><tbody>${pillars}</tbody></table></div>
+  <h2>Priorities</h2>${prios}
+  <div class="grid"><article class="card"><h3>What deserves attention</h3><ul>${alerts}</ul></article><article class="card"><h3>Why priority 1</h3><ul>${why}</ul></article></div>
+  <article class="card"><h3>Planners unlocked</h3><ul>${kits}</ul></article>
+  <p class="small muted">${e(res.disclaimer)}</p>`;
+  $('#hoPrint').addEventListener('click', () => window.print());
 }
 
 // ---------- leads ----------
@@ -253,7 +213,7 @@ async function leadsView() {
 // ---------- users ----------
 async function usersView() {
   const { users } = await api('GET', '/users');
-  main.innerHTML = `<h1>Staff</h1><p class="lead"><strong>Editors</strong> upload and edit drafts. <strong>Reviewers</strong> also approve, publish, archive and activate. <strong>Admins</strong> additionally manage rules, staff, leads and the audit log.</p>
+  main.innerHTML = `<h1>Staff</h1><p class="lead"><strong>Editors</strong> upload and edit drafts. <strong>Reviewers</strong> also approve, publish, archive and activate. <strong>Admins</strong> additionally manage staff, leads and the audit log. Every role can open a report a prospect shares over WhatsApp.</p>
   <details class="card" open><summary>Add a staff member</summary><form id="newUser" class="grid mt12"><div><label for="un">Name</label><input id="un" name="name" required></div><div><label for="ue">Email</label><input id="ue" name="email" type="email" required autocomplete="off"></div>
   <div><label for="ur">Role</label><select id="ur" name="role"><option value="editor">Editor</option><option value="reviewer">Reviewer</option><option value="admin">Admin</option></select></div>
   <div><label for="up">Temporary password (12+ chars)</label><input id="up" name="password" type="password" required minlength="12" autocomplete="new-password"></div><div class="align-end"><button class="btn primary">Create</button></div></form></details>
